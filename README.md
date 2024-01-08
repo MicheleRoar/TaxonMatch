@@ -7,7 +7,7 @@ TaxonMatch is a Python package designed for facilitating the analysis, compariso
 You can install TaxonMatch directly from GitHub using pip:
 
 ```bash
-pip install git+https://github.com/MicheleRoar/taxonmach
+pip install git+https://github.com/MicheleRoar/TaxonMatch.git
 ```
 
 ## Features
