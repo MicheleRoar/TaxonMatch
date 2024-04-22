@@ -1,0 +1,2 @@
+taxonmatch/files/dictionaries/gbif_dictionaries.pkl filter=lfs diff=lfs merge=lfs -text
+taxonmatch/files/dictionaries/ncbi_dictionaries.pkl filter=lfs diff=lfs merge=lfs -text
