@@ -16,5 +16,8 @@ setup(
     url='https://github.com/MicheleRoar/TaxonMatch',
     packages=find_packages(),
     include_package_data=True,
+    package_data={
+    'taxonmatch': ['files/dictionaries/*.pkl', 'files/models/*.pkl'],
+    },
     install_requires=required,  
 )
