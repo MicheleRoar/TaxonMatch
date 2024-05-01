@@ -4,10 +4,6 @@ import numpy as np
 from importlib import resources
 import pickle
 
-def load_xgb_model():
-    with resources.open_binary('taxonmatch.files.models', 'xgb_model.pkl') as file:
-        model = pickle.load(file)
-    return model
 
 def create_gbif_taxonomy(row):
     """
