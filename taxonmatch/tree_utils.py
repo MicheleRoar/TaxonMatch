@@ -4,6 +4,7 @@ import pickle
 import pandas as pd
 import numpy as np
 from anytree import Node, RenderTree
+from taxonmatch.loader import load_gbif_dictionary, load_ncbi_dictionary
 
 
 def find_node_by_name(tree, name):
@@ -355,11 +356,8 @@ def convert_tree_to_dataframe(tree, ncbi_arthropoda, gbif_arthropoda, path, inde
     final_dataset_ = final_dataset.copy()
     
     # Load GBIF and NCBI dictionaries
-    with open('./files/dictionaries/gbif_dictionaries.pkl', 'rb') as f:
-        gbif_synonyms_names, gbif_synonyms_ids, gbif_synonyms_ids_to_ids = pickle.load(f)
-    
-    with open('./files/dictionaries/ncbi_dictionaries.pkl', 'rb') as f:
-        ncbi_synonyms_names, ncbi_synonyms_ids = pickle.load(f)
+    gbif_synonyms_names, gbif_synonyms_ids, gbif_synonyms_ids_to_ids = load_gbif_dictionary()
+    ncbi_synonyms_names, ncbi_synonyms_ids = load_ncbi_dictionary()
         
     # Create new columns in the dataframe using the dictionaries
     final_dataset_['gbif_synonyms_names'] = final_dataset_['taxonID'].map(lambda x: '; '.join(map(str, gbif_synonyms_ids.get(x, []))))

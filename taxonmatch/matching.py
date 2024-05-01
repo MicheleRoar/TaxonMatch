@@ -69,14 +69,15 @@ def extract_after_clade(clade, lineage_names):
 def select_taxonomic_clade(clade, gbif_dataset, ncbi_dataset):
     """
     Selects and processes entries from the GBIF and NCBI datasets that belong to a specified taxonomic clade.
+    Raises an error if the clade is not found in at least one of the datasets.
 
     Args:
-    clade (str): The name of the taxonomic clade to filter for.
-    gbif_dataset (DataFrame): The GBIF dataset.
-    ncbi_dataset (DataFrame): The NCBI dataset.
+        clade (str): The name of the taxonomic clade to filter for.
+        gbif_dataset (DataFrame): The GBIF dataset.
+        ncbi_dataset (DataFrame): The NCBI dataset.
 
     Returns:
-    tuple: Processed GBIF and NCBI datasets containing entries of the specified clade.
+        tuple: Processed GBIF and NCBI datasets containing entries of the specified clade.
     """
 
     # Filter and extract rows of interest from the gbif_dataset DataFrame
@@ -84,15 +85,21 @@ def select_taxonomic_clade(clade, gbif_dataset, ncbi_dataset):
 
     # Filter and apply the extraction function to the DataFrame ncbi_clade
     ncbi_clade = ncbi_dataset[0][ncbi_dataset[0]["ncbi_target_string"].str.contains(";" + clade.lower() + ";")]
-    ncbi_clade_ = ncbi_clade.copy()
     
+    if gbif_clade.empty and ncbi_clade.empty:
+        raise ValueError(f"The specified clade '{clade}' is not found in either the GBIF or NCBI datasets.")
+    elif gbif_clade.empty:
+        raise ValueError(f"The specified clade '{clade}' is not found in the GBIF dataset.")
+    elif ncbi_clade.empty:
+        raise ValueError(f"The specified clade '{clade}' is not found in the NCBI dataset.")
+
+    ncbi_clade_ = ncbi_clade.copy()
     ncbi_clade_.loc[:, 'ncbi_lineage_names'] = clade.lower() + ";" + ncbi_clade_['ncbi_lineage_names'].apply(lambda x: extract_after_clade(clade, x))
 
     # Update ncbi_lineage_ids to match the number of elements in the new ncbi_lineage_names
     ncbi_clade_['ncbi_lineage_ids'] = ncbi_clade_.apply(lambda row: ';'.join(row['ncbi_lineage_ids'].split(';')[-len(row['ncbi_lineage_names'].split(';')):]), axis=1)
 
-    #ncbi_clade = ncbi_clade_.iloc[1:]
-    return  gbif_clade, ncbi_clade
+    return gbif_clade, ncbi_clade_
 
 
 
@@ -250,31 +257,42 @@ def match_dataset(query_dataset, target_dataset, model, tree_generation = False)
 
     doubtful = excluded_data_df.copy()
         
-    # Calculate Levenshtein distance for non-identical pairs
-    lev_dist = doubtful.apply(lambda row: Levenshtein.distance(row['canonicalName'], row['ncbi_canonicalName']), axis=1)
+    if not doubtful.empty:
+        # Calculate Levenshtein distance for non-identical pairs
+        lev_dist = doubtful.apply(lambda row: Levenshtein.distance(row['canonicalName'], row['ncbi_canonicalName']), axis=1)
+        
+        # Create a copy of the filtered DataFrame for non-identical pairs
+        similar_pairs = doubtful.copy()
+        
+        # Add the Levenshtein distance as a new column
+        similar_pairs["levenshtein_distance"] = lev_dist
     
-    # Create a copy of the filtered DataFrame for non-identical pairs
-    similar_pairs = doubtful.copy()
-    
-    # Add the Levenshtein distance as a new column
-    similar_pairs["levenshtein_distance"] = lev_dist
-    
-    possible_typos_df = pd.DataFrame(similar_pairs).query("levenshtein_distance <= 3").sort_values('score')
+        possible_typos_df = pd.DataFrame(similar_pairs).query("levenshtein_distance <= 3").sort_values('score')
+
+        gbif_excluded = query_dataset[query_dataset.taxonID.isin(excluded_data_df.taxonID)]
+        ncbi_excluded = target_dataset[target_dataset.ncbi_id.isin(excluded_data_df.ncbi_id)]
+    else: 
+        possible_typos_df = "No possible typos detected"
+
     
     # Create separate DataFrame for included and excluded data
     df_matching_synonims = pd.DataFrame(matching_synonims).drop_duplicates()
-    df_excluded_ = pd.DataFrame(excluded_data)
-    gbif_excluded = query_dataset[query_dataset.taxonID.isin(df_excluded_.taxonID)]
-    ncbi_excluded = target_dataset[target_dataset.ncbi_id.isin(df_excluded_.ncbi_id)]
     
-    if tree_generation:
+    
+    if tree_generation and not doubtful.empty:
         # Concatenate similar pairs with identical samples
         matched_df = pd.concat([identical, df_matching_synonims, only_ncbi, ncbi_excluded])
     else:
         matched_df = pd.concat([identical, df_matching_synonims])
     
-    # Extract the "gbif_taxonomy" strings from non-similar pairs
-    unmatched_df = pd.concat([df_unmatched, gbif_excluded])
+    if not doubtful.empty:
+        # Extract the "gbif_taxonomy" strings from non-similar pairs
+        unmatched_df = pd.concat([df_unmatched, gbif_excluded])
+    else:
+        unmatched_df = df_unmatched
+
+    matched_df = matched_df.replace([-1, '-1', 'nan', 'NaN', 'none', 'None'], np.nan)
+    unmatched_df = unmatched_df.replace([-1, '-1', 'nan', 'NaN', 'none', 'None'], np.nan)
 
     return matched_df, unmatched_df, possible_typos_df
 
