@@ -314,45 +314,41 @@ def generate_taxonomic_tree(df_matched, df_unmatched):
 
     return tree
 
-def convert_tree_to_dataframe(tree, ncbi_arthropoda, gbif_arthropoda, path, index=False):
+def convert_tree_to_dataframe(tree, query_dataset, target_dataset, path, index=False):
     """
     Converts a taxonomical tree structure into a pandas DataFrame, merges it with external datasets based on NCBI and GBIF identifiers, then enriches it with synonyms from preloaded dictionaries. Finally, it saves the enriched dataset to a specified CSV file path.
-
-    The function performs several key operations: indexing the tree, merging with NCBI and GBIF datasets, enriching with synonyms, and exporting to CSV. It assumes the presence of 'ncbi_arthropoda' and 'gbif_arthropoda' dataframes in the scope, as well as preloaded synonym dictionaries for both NCBI and GBIF.
-
+    
+    The function performs several key operations: indexing the tree, merging with NCBI and GBIF datasets, enriching with synonyms, and exporting to CSV. It assumes the presence of 'target_dataset' and 'query_dataset' dataframes in the scope, as well as preloaded synonym dictionaries for both NCBI and GBIF.
+    
     Args:
     tree (object): The taxonomical tree to be converted, structured in a format compatible with 'index_tree' and 'txm.tree_to_dataframe' methods.
     path (str): The file path where the final CSV file will be saved.
-
+    
     Returns:
     DataFrame: The final, enriched dataset containing original tree data, external dataset information, synonyms, and a unique ID for each entry. The DataFrame is also saved to a CSV file at the specified path.
     """
     indexed_tree = tree.copy()
-
+    
     if index:
         # Index the tree
         indexed_tree = index_tree(tree, include_name=False)
-
+    
     indexed_tree_data = tree_to_dataframe(indexed_tree)
-    df_indexed_tree = pd.DataFrame(indexed_tree_data).tail(-1)  # Remove the first row if it's a header or unwanted
+    df_indexed_tree = pd.DataFrame(indexed_tree_data).tail(-1)
+    
     df_indexed_tree['ncbi_id'] = df_indexed_tree['ncbi_id'].fillna(-1).astype(int)
     df_indexed_tree['gbif_taxon_id'] = df_indexed_tree['gbif_taxon_id'].fillna(-1).astype(int)
-
-    # Save the tree
-    # save_tree(tree, "./indexed_taxonomical_tree.txt")
-    # Find duplicates in 'gbif_taxon_id' column 
-    # doubles_2 = list(set(df_indexed_tree[df_indexed_tree.gbif_taxon_id.duplicated()].gbif_taxon_id))[0:-1]
-    # Sort rows with duplicated 'gbif_taxon_id' by 'gbif_taxon_id' and 'ncbi_id'
-    # df_indexed_tree[df_indexed_tree.gbif_taxon_id.isin(doubles_2)].sort_values(["gbif_taxon_id", "ncbi_id"])
     
-    # Copy the dataframe
-    df_indexed_tree_ = df_indexed_tree.copy()
+    
+    # Ensure the modifications are done directly on the DataFrame
+    target_dataset.loc[:, 'ncbi_id'] = target_dataset['ncbi_id'].astype(int)
+    df_indexed_tree.loc[:, 'ncbi_id'] = df_indexed_tree['ncbi_id'].astype(int)
     
     # Perform merge based on "ncbi_id" column of test with "ncbi_id" of ncbi_dataset
-    merged_df1 = pd.merge(df_indexed_tree_, ncbi_arthropoda, left_on=df_indexed_tree_['ncbi_id'].astype(int), right_on='ncbi_id', how='left')
+    merged_df1 = pd.merge(df_indexed_tree, target_dataset, left_on='ncbi_id', right_on='ncbi_id', how='left')
     
     # Perform merge based on "gbif_taxon_id" column of test with "taxonID" of gbif_dataset
-    final_dataset = pd.merge(merged_df1, gbif_arthropoda, left_on=merged_df1['gbif_taxon_id'].astype(int), right_on='taxonID', how='left')
+    final_dataset = pd.merge(merged_df1, query_dataset, left_on=merged_df1['gbif_taxon_id'], right_on='taxonID', how='left')
     final_dataset_ = final_dataset.copy()
     
     # Load GBIF and NCBI dictionaries
@@ -364,23 +360,13 @@ def convert_tree_to_dataframe(tree, ncbi_arthropoda, gbif_arthropoda, path, inde
     final_dataset_['gbif_synonyms_ids'] = final_dataset_['taxonID'].map(lambda x: '; '.join(map(str, gbif_synonyms_ids_to_ids.get(x, []))))
     final_dataset_['ncbi_synonyms_names'] = final_dataset_['ncbi_id'].map(lambda x: '; '.join(map(str, ncbi_synonyms_ids.get(x, []))))
     final_dataset_['id'] = range(1, len(final_dataset_) + 1)  # Assign a unique ID to each row
-    final_dataset_ = final_dataset_.fillna(-1)  # Fill missing values with -1
+    
+    final_dataset_ = final_dataset_.infer_objects(copy=False).fillna(-1)
+    final_dataset_ = final_dataset_.replace([-1, '-1', ""], None)
+    
     # Select and rename columns
     final_dataset_ = final_dataset_[["id", "Index", "ncbi_id", "gbif_taxon_id", "ncbi_canonicalName", "canonicalName", 'gbif_synonyms_ids', "gbif_synonyms_names", "ncbi_synonyms_names"]]
     final_dataset_.columns = ["id", "path", "ncbi_taxon_id", "gbif_taxon_id", "ncbi_canonical_name", "gbif_canonical_name", "gbif_synonyms_ids", "gbif_synonyms_names", "ncbi_synonyms_names"]
-    final_dataset_.fillna(-1, inplace=True)
-
-    # Standardize missing values
-    final_dataset_.replace({-1: np.nan, 'nan': np.nan, '': np.nan, 'None': np.nan, '-1.0': np.nan}, inplace=True)
-
-    # Ensure that all columns use appropriate data types
-    for col in final_dataset_.columns:
-        if pd.api.types.is_numeric_dtype(final_dataset_[col]):
-            # Maintain float for a uniform representation of NaN
-            final_dataset_[col] = pd.to_numeric(final_dataset_[col], errors='coerce').astype(float)
-        else:
-            final_dataset_[col] = final_dataset_[col].astype('object')
-
-
+    
     final_dataset_.to_csv(path, index=False)  # Save the final dataset to a CSV
-    return(final_dataset_)
+    return final_dataset_
