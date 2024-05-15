@@ -192,14 +192,12 @@ def find_matching(query_dataset, target_dataset, model, relevant_features, thres
     ncbi_missing_3 = target_dataset[target_dataset['ncbi_canonicalName'].str.contains(r'\d')]
     new_df_matched = pd.concat([df_matched, ncbi_missing_2, ncbi_missing_3], ignore_index=True)
     new_df_matched = new_df_matched.fillna(-1)
-
     
     df_unmatched = query_dataset[query_dataset["gbif_taxonomy"].isin(discarded)]
     return (new_df_matched, df_unmatched)
 
 
-def match_dataset(query_dataset, target_dataset, model, tree_generation = False):
-    
+def match_dataset(query_dataset, target_dataset, model, tree_generation = False): 
     """
     Filters the matched dataset to identify and separate synonyms.
     
@@ -209,12 +207,12 @@ def match_dataset(query_dataset, target_dataset, model, tree_generation = False)
     Returns:
     tuple: DataFrames of filtered synonyms and unmatched entries.
     """ 
-
+    
     relevant_features=['levenshtein_distance', 'damerau_levenshtein_distance', 'ratio', 'q_ratio', 'token_sort_ratio', 'w_ratio', 'token_set_ratio', 'jaro_winkler_similarity', 'partial_ratio', 'hamming_distance', 'jaro_similarity']
-
+    
     # Carica i dizionari GBIF
     gbif_synonyms_names, gbif_synonyms_ids, gbif_synonyms_ids_to_ids = load_gbif_dictionary()
-
+    
     # Carica i dizionari NCBI
     ncbi_synonyms_names, ncbi_synonyms_ids = load_ncbi_dictionary()
     
@@ -227,11 +225,11 @@ def match_dataset(query_dataset, target_dataset, model, tree_generation = False)
     not_identical = df_matched.query("(canonicalName != ncbi_canonicalName) and taxonID != -1")
     
     # Filter rows where canonicalName is not identical to ncbi_canonicalName
-    only_ncbi = df_matched.query("taxonID == -1")
+    only_ncbi = df_matched.query("(taxonID == -1) and ncbi_lineage_ranks != -1")
     
     matching_synonims = []
     excluded_data = []
-
+    
     # Pre-elaborazione: converti i nomi in minuscolo una sola volta
     not_identical_ = not_identical.copy()
     not_identical_[['canonicalName', 'ncbi_canonicalName']] = not_identical_[['canonicalName', 'ncbi_canonicalName']].apply(lambda x: x.str.lower())
@@ -252,9 +250,7 @@ def match_dataset(query_dataset, target_dataset, model, tree_generation = False)
             excluded_data.append(row)
     
     # Converti le liste in DataFrame solo dopo il ciclo
-    matching_synonims_df = pd.DataFrame(matching_synonims)
     excluded_data_df = pd.DataFrame(excluded_data)
-
     doubtful = excluded_data_df.copy()
         
     if not doubtful.empty:
@@ -268,33 +264,47 @@ def match_dataset(query_dataset, target_dataset, model, tree_generation = False)
         similar_pairs["levenshtein_distance"] = lev_dist
     
         possible_typos_df = pd.DataFrame(similar_pairs).query("levenshtein_distance <= 3").sort_values('score')
-
+    
         gbif_excluded = query_dataset[query_dataset.taxonID.isin(excluded_data_df.taxonID)]
         ncbi_excluded = target_dataset[target_dataset.ncbi_id.isin(excluded_data_df.ncbi_id)]
     else: 
         possible_typos_df = "No possible typos detected"
-
+    
     
     # Create separate DataFrame for included and excluded data
     df_matching_synonims = pd.DataFrame(matching_synonims).drop_duplicates()
+    df_matching_synonims.loc[:, 'ncbi_id'] = df_matching_synonims['ncbi_id'].astype(int)
+    
+    
+    
+    # Assuming you have your sets defined
+    iden = set(identical.ncbi_id)
+    
+    # Filter out the excluded IDs from other DataFrames
+    ncbi_excluded_filtered = ncbi_excluded[~ncbi_excluded.ncbi_id.isin(iden)]
     
     
     if tree_generation and not doubtful.empty:
         # Concatenate similar pairs with identical samples
-        matched_df = pd.concat([identical, df_matching_synonims, only_ncbi, ncbi_excluded])
+        matched_df = pd.concat([identical , df_matching_synonims, only_ncbi, ncbi_excluded_filtered])
     else:
-        matched_df = pd.concat([identical, df_matching_synonims])
+        matched_df = pd.concat([identical , df_matching_synonims])
+        
+    matched_df = matched_df.infer_objects(copy=False).fillna(-1)
+    matched_df['taxonID'] = matched_df['taxonID'].astype(int)
     
     if not doubtful.empty:
         # Extract the "gbif_taxonomy" strings from non-similar pairs
         unmatched_df = pd.concat([df_unmatched, gbif_excluded])
     else:
         unmatched_df = df_unmatched
-
-    matched_df = matched_df.replace([-1, '-1', 'nan', 'NaN', 'none', 'None'], np.nan)
-    unmatched_df = unmatched_df.replace([-1, '-1', 'nan', 'NaN', 'none', 'None'], np.nan)
-
+    
+    unmatched_df = unmatched_df.infer_objects(copy=False).fillna(-1)
+    
+    matched_df = matched_df.replace([-1, '-1'], None)
+    unmatched_df = unmatched_df.replace([-1, '-1'], None)
     return matched_df, unmatched_df, possible_typos_df
+
 
 
 def find_similar(target_dataset, query_dataset, n_neighbors=3, exclude_perfect_match=True):
@@ -352,13 +362,3 @@ def find_similar(target_dataset, query_dataset, n_neighbors=3, exclude_perfect_m
     })
 
     return matches_df
-
-
-
-
-
-
-
-
-
-
