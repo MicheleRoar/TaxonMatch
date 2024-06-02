@@ -343,7 +343,7 @@ def download_ncbi_taxonomy(output_folder=None):
         nodes_df['ncbi_lineage_ranks'] = nodes_df['ncbi_lineage_ranks'].apply(lambda ranks: ';'.join(ranks))
         
         # Define target ranks and build target strings based on ranks
-        target_ranks = {'superkingdom', 'phylum', 'class', 'order', 'family', 'genus', 'species'}
+        target_ranks = {'phylum', 'class', 'order', 'family', 'genus', 'species', 'subspecies'}
         
         def build_target_string(names, ranks):
             names = names.split(';')
@@ -356,9 +356,11 @@ def download_ncbi_taxonomy(output_folder=None):
         # Prepare final subsets for return
         ncbi_full = nodes_df[['ncbi_id', 'ncbi_lineage_names', 'ncbi_lineage_ids', 'ncbi_canonicalName', 'ncbi_rank', 'ncbi_lineage_ranks', 'ncbi_target_string']]
         ncbi_subset = ncbi_full.copy()
-        ncbi_subset['ncbi_target_string'] = ncbi_subset.apply(prepare_ncbi_strings, axis=1)
-        ncbi_subset["ncbi_target_string"] = ncbi_subset["ncbi_target_string"].apply(remove_extra_separators).str.strip(';')
-        ncbi_subset = ncbi_subset.drop_duplicates(subset="ncbi_target_string")
+        ncbi_filtered = ncbi_subset[ncbi_subset["ncbi_rank"].isin(target_ranks)]
+
+        #ncbi_subset['ncbi_target_string'] = ncbi_subset.apply(prepare_ncbi_strings, axis=1)
+        #ncbi_subset["ncbi_target_string"] = ncbi_subset["ncbi_target_string"].apply(remove_extra_separators).str.strip(';')
+        #ncbi_subset = ncbi_subset.drop_duplicates(subset="ncbi_target_string")
     
     finally:
         done_event.set()
@@ -366,4 +368,4 @@ def download_ncbi_taxonomy(output_folder=None):
         print("\rProcessing samples...")
         print("Done.")
 
-    return ncbi_subset, ncbi_full
+    return ncbi_filtered , ncbi_full
