@@ -80,11 +80,14 @@ def select_taxonomic_clade(clade, gbif_dataset, ncbi_dataset):
         tuple: Processed GBIF and NCBI datasets containing entries of the specified clade.
     """
 
+    clade_with_boundaries = r'\b' + clade.lower() + r'\b'
+
     # Filter and extract rows of interest from the gbif_dataset DataFrame
-    gbif_clade = gbif_dataset[0][gbif_dataset[0]["gbif_taxonomy"].str.contains(";" + clade.lower() + ";")]
+    gbif_clade = gbif_dataset[0][gbif_dataset[0]["gbif_taxonomy"].str.contains(clade_with_boundaries.lower() + ";")]
 
     # Filter and apply the extraction function to the DataFrame ncbi_clade
-    ncbi_clade = ncbi_dataset[0][ncbi_dataset[0]["ncbi_target_string"].str.contains(";" + clade.lower() + ";")]
+    ncbi_clade = ncbi_dataset[0][ncbi_dataset[0]["ncbi_lineage_names"].str.lower().str.contains(clade_with_boundaries.lower() + ";")]
+
     
     if gbif_clade.empty and ncbi_clade.empty:
         raise ValueError(f"The specified clade '{clade}' is not found in either the GBIF or NCBI datasets.")
