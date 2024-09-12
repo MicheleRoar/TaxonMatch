@@ -1,9 +1,11 @@
 import re
 import ete3
+import json
 import pickle
 import pandas as pd
 import numpy as np
 from anytree import Node, RenderTree
+from anytree.exporter import JsonExporter
 from taxonmatch.loader import load_gbif_dictionary, load_ncbi_dictionary
 
 
@@ -26,54 +28,116 @@ def find_node_by_name(tree, name):
             return result
     return None
 
-def print_tree(tree, root_name=None):
+
+def reroot_tree(tree, root_name=None):
     """
-    Prints a tree structure starting from a specified root node, with identification details for each node,
-    allowing for case-insensitive node name specification.
+    Reroots the tree to start from the specified root node.
 
     Args:
-    tree (AnyNode or similar tree node): The initial root of the tree.
-    root_name (str, optional): The name of the node to use as the new root for printing, case-insensitively.
+    tree (AnyNode or similar tree node): The current tree.
+    root_name (str, optional): The name of the node to use as the new root, case-insensitive.
 
-    Each node of the tree is expected to potentially have 'ncbi_id' and 'gbif_taxon_id' attributes.
-    Nodes are printed with their names, and IDs are included if available.
+    Returns:
+    AnyNode: The new root of the tree if root_name is specified and found, otherwise the original tree.
     """
     if root_name is not None:
-        root_name = root_name.lower()  # Convert root_name to lowercase to ensure case-insensitivity
+        root_name = root_name.lower()  # Convert root_name to lowercase for case-insensitive search
+        new_root = find_node_by_name(tree, root_name) 
+        if new_root is None:
+            print("Root node not found.")
+            return None  # Return None if the root node is not found
+        return new_root
+    return tree  # Return the original tree if no root_name is specified
+
+
+def print_tree(tree, root_name=None):
+    """
+    Prints the structure of a tree sorted alphabetically starting from a specified root node.
+
+    Args:
+    tree (AnyNode or a similar tree node): The root node to start from.
+    root_name (str, optional): The name of the node to use as the root for printing, case-insensitive.
+
+    Each node of the tree may have attributes 'ncbi_id' and 'gbif_taxon_id'.
+    The nodes are printed with their names, and IDs are included if available.
+    """
+    def sort_children(node):
+        # Ensure that node.children is a list of nodes and sort it
+        if isinstance(node, list):
+            return sorted(node, key=lambda child: child.name.lower())
+        else:
+            return sorted(node.children, key=lambda child: child.name.lower())
+
+    if root_name is not None:
+        root_name = root_name.lower()  # Convert root_name to lowercase for case-insensitive search
         tree = find_node_by_name(tree, root_name)
         if tree is None:
             print("Root node not found.")
             return
 
-    # Print the tree from the new root with identification details
-    for pre, fill, node in RenderTree(tree):
+    # Print the tree from the new root node, sorted alphabetically
+    for pre, fill, node in RenderTree(tree, childiter=sort_children):
         ncbi_id = getattr(node, 'ncbi_id', None)
         gbif_id = getattr(node, 'gbif_taxon_id', None)
         id_info = f" (NCBI ID: {ncbi_id}, GBIF ID: {gbif_id})" if ncbi_id or gbif_id else ""
         print(f"{pre}{node.name}{id_info}")
 
-def save_tree(tree, path):
+def tree_to_newick(node):
     """
-    Saves a tree structure to a file with identification details for each node.
+    Recursively converts an AnyNode tree to Newick format.
+    """
+    if not node.children:
+        return node.name
+    children_newick = ",".join([tree_to_newick(child) for child in node.children])
+    return f"({children_newick}){node.name}"
 
+def save_tree(tree, path, output_format='txt'):
+    """
+    Saves a tree structure to a file with identification details for each node in various formats.
     Args:
     tree (AnyNode or similar tree node): The root of the tree to be saved.
     path (str): Path to the file where the tree will be saved.
-
-    Each node of the tree is expected to potentially have 'ncbi_id' and 'gbif_taxon_id' attributes.
-    The function saves the tree to a file, each node with its name and IDs (if available), and prints a confirmation message.
+    output_format (str): Format to save the tree. Supported formats: 'txt', 'newick', 'json'.
     """
-    # Open a file in write mode
-    with open(path, 'w') as f:
-        # Print the tree with IDs to the file
-        for pre, fill, node in RenderTree(tree):
-            ncbi_id = getattr(node, 'ncbi_id', None)
-            gbif_id = getattr(node, 'gbif_taxon_id', None)
-            id_info = f" (NCBI ID: {ncbi_id}, GBIF ID: {gbif_id})" if ncbi_id or gbif_id else ""
-            f.write(f"{pre}{node.name}{id_info}\n")
+    def alphabetical_sort(node):
+        return node.name.lower()  # Sort nodes alphabetically by name
 
-    print(f"The tree is saved in the file: {path}.")
+    def sort_children(node):
+        # Sort the children of the current node, if it has any
+        if hasattr(node, 'children') and node.children:
+            node.children = sorted(node.children, key=lambda child: child.name.lower())
+            # Recursively sort the children of each child node
+            for child in node.children:
+                sort_children(child)
 
+    # Sort the tree before saving
+    sort_children(tree)
+
+    if output_format == 'txt':
+        with open(path, 'w') as f:
+            # Print the tree with IDs to the file
+            for pre, fill, node in RenderTree(tree):
+                ncbi_id = getattr(node, 'ncbi_id', None)
+                gbif_id = getattr(node, 'gbif_taxon_id', None)
+                id_info = f" (NCBI ID: {ncbi_id}, GBIF ID: {gbif_id})" if ncbi_id or gbif_id else ""
+                f.write(f"{pre}{node.name}{id_info}\n")
+        print(f"The tree is saved as TXT in the file: {path}.")
+
+    elif output_format == 'newick':
+        newick_representation = tree_to_newick(tree) + ';'
+        with open(path, 'w') as f:
+            f.write(newick_representation)
+        print(f"The tree is saved as Newick in the file: {path}.")
+
+    elif output_format == 'json':
+        exporter = JsonExporter(indent=2, sort_keys=True)
+        json_data = exporter.export(tree)
+        with open(path, 'w') as f:
+            f.write(json_data)
+        print(f"The tree is saved as JSON in the file: {path}.")
+
+    else:
+        raise ValueError(f"Unsupported format: {output_format}. Supported formats are 'txt', 'newick', and 'json'.")
 
 
 def index_tree(node, index_list=None, include_name=True):
@@ -129,8 +193,6 @@ def generate_dataframe(node):
     df = pd.DataFrame(data, columns=['ncbi_id', 'gbif_taxon_id', 'Index'])
     return df
 
-
-import pandas as pd
 
 def export_tree(tree, ncbi_dataset, gbif_dataset, path):
     """
@@ -321,7 +383,7 @@ def convert_tree_to_dataframe(tree, query_dataset, target_dataset, path, index=F
     The function performs several key operations: indexing the tree, merging with NCBI and GBIF datasets, enriching with synonyms, and exporting to CSV. It assumes the presence of 'target_dataset' and 'query_dataset' dataframes in the scope, as well as preloaded synonym dictionaries for both NCBI and GBIF.
     
     Args:
-    tree (object): The taxonomical tree to be converted, structured in a format compatible with 'index_tree' and 'txm.tree_to_dataframe' methods.
+    tree (object): The taxonomical tree to be converted, structured in a format compatible with 'index_tree' and 'tree_to_dataframe' methods.
     path (str): The file path where the final CSV file will be saved.
     
     Returns:
@@ -369,4 +431,67 @@ def convert_tree_to_dataframe(tree, query_dataset, target_dataset, path, index=F
     final_dataset_.columns = ["id", "path", "ncbi_taxon_id", "gbif_taxon_id", "ncbi_canonical_name", "gbif_canonical_name", "gbif_synonyms_ids", "gbif_synonyms_names", "ncbi_synonyms_names"]
     
     final_dataset_.to_csv(path, index=False)  # Save the final dataset to a CSV
+
+
+
+
+def find_synonyms(input_term, ncbi_data, gbif_data):
+    # Reset accepted_value and synonyms
+    accepted_value_ncbi = None
+    accepted_value_gbif = None
+    ncbi_synonyms = []
+    gbif_synonyms = []
+
+    # Step 1: Check if the input is an accepted value or synonym in NCBI
+    if input_term in ncbi_data:
+        accepted_value_ncbi = input_term
+        ncbi_synonyms = ncbi_data[accepted_value_ncbi]
+    else:
+        for key, synonyms in ncbi_data.items():
+            if input_term in synonyms:
+                accepted_value_ncbi = key
+                ncbi_synonyms = synonyms
+                break
+
+    # Step 2: Search in GBIF for the accepted value or its synonyms
+    if input_term in gbif_data:
+        gbif_synonyms = gbif_data[input_term]
+        accepted_value_gbif = input_term
+    else:
+        for key, synonyms in gbif_data.items():
+            if input_term in synonyms or any(ncbi_synonym in synonyms for ncbi_synonym in ncbi_synonyms):
+                gbif_synonyms = gbif_data[key]
+                accepted_value_gbif = key  # Update accepted value based on GBIF synonym match
+                break
+
+    # Step 3: Ensure the accepted value is updated to the corresponding NCBI key, if found in GBIF synonyms
+    for key, synonyms in ncbi_data.items():
+        if accepted_value_gbif in synonyms:
+            accepted_value_ncbi = key  # Update the accepted value to the NCBI key
+
+    # Step 4: Check if any NCBI synonyms correspond to GBIF keys and add their synonyms
+    for ncbi_synonym in ncbi_synonyms:
+        if ncbi_synonym in gbif_data:
+            gbif_synonyms.extend(gbif_data[ncbi_synonym])
+            accepted_value_gbif = ncbi_synonym  # If NCBI synonym is a GBIF key, update accepted GBIF name
+
+    # Add synonyms from the NCBI key if it is present in GBIF as well
+    if accepted_value_ncbi in gbif_data:
+        gbif_synonyms.extend(gbif_data[accepted_value_ncbi])
+
+    # Now add the labels (NCBI / GBIF)
+    accepted_value = f"{accepted_value_ncbi} (NCBI)"
+    if accepted_value_gbif and accepted_value_gbif != accepted_value_ncbi:
+        accepted_value += f" / {accepted_value_gbif} (GBIF)"
+
+    # Ensure the NCBI synonyms are correctly populated
+    if accepted_value_ncbi in ncbi_data:
+        ncbi_synonyms = ncbi_data[accepted_value_ncbi]
+
+    # Final result
+    return {
+        'Accepted Value': accepted_value,
+        'GBIF Synonyms': list(set(gbif_synonyms)),
+        'NCBI Synonyms': list(set(ncbi_synonyms))
+    }
     return final_dataset_

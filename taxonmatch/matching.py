@@ -5,7 +5,6 @@ import pickle
 import Levenshtein
 import numpy as np
 import pandas as pd
-import Levenshtein
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.neighbors import NearestNeighbors
 from .model_training import tuple_engineer_features
@@ -141,9 +140,6 @@ def find_matching(query_dataset, target_dataset, model, relevant_features, thres
     
     target = list(set(target_dataset_2.ncbi_target_string))
     query = list(set(query_dataset.gbif_taxonomy))
-    
-    vectorizer = TfidfVectorizer(analyzer=ngrams, lowercase=True)
-    tfidf = vectorizer.fit_transform(target)
 
     discarded = []
     matches_df = []
@@ -255,6 +251,7 @@ def match_dataset(query_dataset, target_dataset, model, tree_generation = False)
     # Converti le liste in DataFrame solo dopo il ciclo
     excluded_data_df = pd.DataFrame(excluded_data)
     doubtful = excluded_data_df.copy()
+    doubtful = doubtful.dropna(subset=['canonicalName', 'ncbi_canonicalName'])
         
     if not doubtful.empty:
         # Calculate Levenshtein distance for non-identical pairs
@@ -275,8 +272,11 @@ def match_dataset(query_dataset, target_dataset, model, tree_generation = False)
     
     
     # Create separate DataFrame for included and excluded data
-    df_matching_synonims = pd.DataFrame(matching_synonims).drop_duplicates()
-    df_matching_synonims.loc[:, 'ncbi_id'] = df_matching_synonims['ncbi_id'].astype(int)
+    try:
+        df_matching_synonims = pd.DataFrame(matching_synonims).drop_duplicates()
+        df_matching_synonims.loc[:, 'ncbi_id'] = df_matching_synonims['ncbi_id'].astype(int)
+    except KeyError as e:
+        df_matching_synonims = pd.DataFrame() 
     
     
     
@@ -310,24 +310,22 @@ def match_dataset(query_dataset, target_dataset, model, tree_generation = False)
 
 
 
-def find_similar(target_dataset, query_dataset, n_neighbors=3, exclude_perfect_match=True):
+def find_top_n_similar(input_string, target_dataset, n_neighbors=3):
     """
-    Finds text matches between target and query datasets using TF-IDF vectorization and nearest neighbors.
+    Finds the top N similar strings in the target dataset for a given input string using TF-IDF vectorization and nearest neighbors.
 
     Args:
+    input_string (str): The input string to match against the target dataset.
     target_dataset (DataFrame): Dataset containing the target entries with 'ncbi_canonicalName' column.
-    query_dataset (DataFrame): Dataset containing the query entries with 'gbif_taxonomy' column.
     n_neighbors (int): Number of nearest neighbors to find. Defaults to 3.
-    exclude_perfect_match (bool): Whether to exclude perfect matches (distance = 0). Defaults to True.
 
     Returns:
-    DataFrame: A DataFrame containing the queries, their matched targets, and the distances.
+    DataFrame: A DataFrame containing the matched targets and the distances.
     """
 
     # Filter entries that contain digits in canonical names
     target_dataset_filtered = target_dataset[~target_dataset['ncbi_canonicalName'].str.contains(r'\d')]
-    target = list(set(target_dataset_filtered.ncbi_target_string))
-    query = list(set(query_dataset.gbif_taxonomy))
+    target = list(set(target_dataset_filtered.ncbi_canonicalName))
 
     # Set up the TF-IDF vectorizer
     vectorizer = TfidfVectorizer(analyzer=ngrams, lowercase=True)
@@ -337,31 +335,93 @@ def find_similar(target_dataset, query_dataset, n_neighbors=3, exclude_perfect_m
     nbrs = NearestNeighbors(n_neighbors=n_neighbors, algorithm='auto', n_jobs=-1, metric='cosine')
     nbrs.fit(tfidf)
 
-    # Compute the nearest neighbors
+    # Compute the nearest neighbors for the input string
+    distances, indices = nbrs.kneighbors(vectorizer.transform([input_string]))
+    distances = np.round(distances[0], 2)
+    indices = indices[0]
+
+    # Prepare lists for the final DataFrame
+    matched_targets = [target[idx] for idx in indices]
+    matched_ids = [target_dataset_filtered[target_dataset_filtered['ncbi_canonicalName'] == target[idx]]['ncbi_id'].values[0] for idx in indices]
+    matched_distances = distances
+
+    # Organize and format the results
+    matches_df = pd.DataFrame({
+        'Query': [input_string] * len(matched_targets),
+        'ncbi_id': matched_ids,
+        'Matched Target': matched_targets,
+        'Distance': matched_distances
+    })
+
+    return matches_df
+
+
+
+def find_closest_sample(target_dataset, query_dataset, n_neighbors=1, similarity_threshold=0.70, max_levenshtein_distance=2):
+    """
+    Finds the nearest neighbor in the target dataset for each string in the query dataset using TF-IDF vectorization and nearest neighbors,
+    with an option to filter based on a similarity threshold and the Levenshtein distance of the first word after splitting by the last semicolon.
+
+    Args:
+    target_dataset (DataFrame): Dataset containing the target entries with 'ncbi_canonicalName' and 'ncbi_id' columns.
+    query_dataset (DataFrame): Dataset containing the query entries with 'gbif_taxonomy' column.
+    n_neighbors (int): Number of nearest neighbors to find. Defaults to 1.
+    similarity_threshold (float): Threshold for similarity. Entries with distances above this threshold are discarded. Defaults to 0.70.
+    max_levenshtein_distance (int): Maximum allowed Levenshtein distance for the first word comparison. Defaults to 3.
+
+    Returns:
+    DataFrame: A DataFrame containing the queries, their matched targets, their IDs, and the distances.
+    """
+
+    # Filter entries that contain digits in canonical names
+    target_dataset_filtered = target_dataset[~target_dataset['ncbi_canonicalName'].str.contains(r'\d')]
+    target = list(target_dataset_filtered.ncbi_canonicalName)
+    target_ids = list(target_dataset_filtered.ncbi_id)
+    query = list(query_dataset.gbif_taxonomy)
+
+    # Set up the TF-IDF vectorizer
+    vectorizer = TfidfVectorizer(analyzer=ngrams, lowercase=True)
+    tfidf = vectorizer.fit_transform(target)
+
+    # Configure the NearestNeighbors model
+    nbrs = NearestNeighbors(n_neighbors=n_neighbors, algorithm='auto', n_jobs=-1, metric='cosine')
+    nbrs.fit(tfidf)
+
+    # Compute the nearest neighbors for the query strings
     distances, indices = nbrs.kneighbors(vectorizer.transform(query))
     distances = np.round(distances, 2)
 
     # Prepare lists for the final DataFrame
     filtered_queries = []
     filtered_targets = []
+    filtered_ids = []
     filtered_distances = []
 
     for i, (dist_list, idx_list) in enumerate(zip(distances, indices)):
-        count = 0
-        for dist, idx in zip(dist_list, idx_list):
-            if count < n_neighbors and (not exclude_perfect_match or (exclude_perfect_match and dist != 0)):
-                filtered_queries.append(query[i])
-                filtered_targets.append(target[idx])
-                filtered_distances.append(dist)
-                count += 1
-            if count == n_neighbors:
-                break
+        if dist_list[0] <= similarity_threshold:
+            query_string = query[i]
+            target_string = target[idx_list[0]]
+
+            # Extract the last part after the last semicolon in query and target
+            query_last_part = query_string.split(';')[-1].split()[0].lower()
+            target_last_part = target_string.split(';')[-1].split()[0].lower()
+
+            # Calculate the Levenshtein distance between the first words
+            lev_distance = Levenshtein.distance(query_last_part, target_last_part)
+            
+            if lev_distance <= max_levenshtein_distance:
+                filtered_queries.append(query_string)
+                filtered_targets.append(target_string)
+                filtered_ids.append(target_ids[idx_list[0]])
+                filtered_distances.append(dist_list[0])
 
     # Organize and format the results
     matches_df = pd.DataFrame({
         'Query': filtered_queries,
+        'Matched_id': filtered_ids,
         'Matched Target': filtered_targets,
         'Distance': filtered_distances
     })
 
     return matches_df
+

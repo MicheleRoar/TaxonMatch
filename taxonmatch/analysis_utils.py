@@ -1,5 +1,6 @@
 
 import pandas as pd
+import requests
 import pickle
 import os
 from textdistance import levenshtein
@@ -154,3 +155,34 @@ def get_wordcloud(full_training_set):
     plt.axis("off")
     plt.tight_layout(pad=0)
     plt.show()
+
+
+
+def find_dataset_id_by_name(name):
+    # URL of the API for searching datasets in GBIF
+    url = "https://api.gbif.org/v1/dataset"
+
+    # Parameters for the simple text search
+    params = {
+        'q': name,  # Search by name
+        'limit': 10  # Limit of returned results
+    }
+
+    # Make the request to the GBIF API
+    response = requests.get(url, params=params)
+
+    if response.status_code == 200:
+        data = response.json()
+        results = data.get('results', [])
+
+        if not results:
+            print("No datasets found.")
+            return None
+
+        # Print and return the ID of the first matching dataset
+        for dataset in results:
+            print(f"Title: {dataset['title']}, ID: {dataset['key']}")
+            return dataset['key']
+    else:
+        print(f"Error during request: {response.status_code}")
+        return None

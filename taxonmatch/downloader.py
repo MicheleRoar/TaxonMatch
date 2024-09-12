@@ -2,12 +2,17 @@ import os
 import re
 import time
 import zipfile
+import logging
+import requests
 import threading
 import numpy as np
 import pandas as pd
 import urllib.request
 from tqdm import tqdm
-
+from bs4 import BeautifulSoup
+from requests.adapters import HTTPAdapter
+from requests.packages.urllib3.util.retry import Retry
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 
@@ -21,10 +26,20 @@ def create_gbif_taxonomy(row):
     Returns:
     str: A semicolon-separated string of taxonomy levels.
     """
-    if row['taxonRank'] in ['species', 'subspecies', "variety"]:
-        return f"{row['phylum']};{row['class']};{row['order']};{row['family']};{row['genus']};{row['canonicalName']}".lower()
+    if row['taxonRank'] == "subspecies":
+        if pd.isna(row['canonicalName']):
+            species = ""
+        else:
+            species = " ".join(row['canonicalName'].split(" ")[:2]).lower()
+        return f"{row['phylum']};{row['class']};{row['order']};{row['family']};{row['genus']};{species};{row['canonicalName']}".lower()
+    elif row['taxonRank'] in ['species', "variety"]:
+        if pd.isna(row['canonicalName']):
+            return f"{row['phylum']};{row['class']};{row['order']};{row['family']};{row['genus']}".lower()
+        else:
+            return f"{row['phylum']};{row['class']};{row['order']};{row['family']};{row['genus']};{row['canonicalName']}".lower()
     else:
         return f"{row['phylum']};{row['class']};{row['order']};{row['family']};{row['genus']}".lower()
+
 
 def find_all_parents(taxon_id, parents_dict):
     """
@@ -47,7 +62,7 @@ def find_all_parents(taxon_id, parents_dict):
 
     return parents_string
 
-def load_gbif_samples(gbif_path_file):
+def load_gbif_samples(gbif_path_file, source = None):
     """
     Load GBIF samples from a file and process them.
 
@@ -86,9 +101,14 @@ def load_gbif_samples(gbif_path_file):
     try:
         
         # Define columns of interest
-        columns_of_interest = ['taxonID', 'parentNameUsageID', 'acceptedNameUsageID', 'canonicalName', 'taxonRank', 'taxonomicStatus', 'kingdom', 'phylum', 'class', 'order', 'family', 'genus']
+        columns_of_interest = ['taxonID', 'datasetID' ,'parentNameUsageID', 'acceptedNameUsageID', 'canonicalName', 'taxonRank', 'taxonomicStatus', 'kingdom', 'phylum', 'class', 'order', 'family', 'genus']
         gbif_full = pd.read_csv(gbif_path_file, sep="\t", usecols=columns_of_interest, on_bad_lines='skip', low_memory=False)
     
+        if source:
+            gbif_full = gbif_full[gbif_full['datasetID'] == source]
+
+        gbif_full['gbif_taxonomy'] = gbif_full.apply(create_gbif_taxonomy, axis=1)
+
         # Filter the DataFrame
         gbif_subset = gbif_full.query("taxonomicStatus == 'accepted' & taxonRank != 'unranked'").fillna('').drop_duplicates(subset=gbif_full.columns[1:], keep='first')
     
@@ -120,7 +140,7 @@ def load_gbif_samples(gbif_path_file):
     return gbif_subset, gbif_full
 
 
-def download_gbif_taxonomy(output_folder=None):
+def download_gbif_taxonomy(output_folder=None, source = None):
     """
     Download the GBIF backbone taxonomy dataset and save the 'Taxon.tsv' file in a 'GBIF_output' folder.
 
@@ -165,7 +185,7 @@ def download_gbif_taxonomy(output_folder=None):
         else:
             raise RuntimeError("Error saving Taxon.tsv. Consider raising an issue on Github.")
 
-    gbif_subset, gbif_full = load_gbif_samples(tsv_path)
+    gbif_subset, gbif_full = load_gbif_samples(tsv_path, source)
 
     return gbif_subset, gbif_full
 
@@ -205,7 +225,7 @@ def remove_extra_separators(s):
     return re.sub(r';+', ';', s)
 
 
-def download_ncbi_taxonomy(output_folder=None):
+def download_ncbi_taxonomy(output_folder=None, source=None):
 
     """
     Download, extract, and process NCBI taxonomy data.
@@ -357,10 +377,6 @@ def download_ncbi_taxonomy(output_folder=None):
         ncbi_full = nodes_df[['ncbi_id', 'ncbi_lineage_names', 'ncbi_lineage_ids', 'ncbi_canonicalName', 'ncbi_rank', 'ncbi_lineage_ranks', 'ncbi_target_string']]
         ncbi_subset = ncbi_full.copy()
         ncbi_filtered = ncbi_subset[ncbi_subset["ncbi_rank"].isin(target_ranks)]
-
-        #ncbi_subset['ncbi_target_string'] = ncbi_subset.apply(prepare_ncbi_strings, axis=1)
-        #ncbi_subset["ncbi_target_string"] = ncbi_subset["ncbi_target_string"].apply(remove_extra_separators).str.strip(';')
-        #ncbi_subset = ncbi_subset.drop_duplicates(subset="ncbi_target_string")
     
     finally:
         done_event.set()
@@ -368,4 +384,119 @@ def download_ncbi_taxonomy(output_folder=None):
         print("\rProcessing samples...")
         print("Done.")
 
-    return ncbi_filtered , ncbi_full
+    if source == "a3cat":
+        return load_a3cat_dataframe(ncbi_filtered), ncbi_full
+    if source == "beebiome":
+        return get_bees_from_beebiome_dataframe(ncbi_filtered), ncbi_full         
+    else:
+        return ncbi_filtered, ncbi_full
+
+
+
+# Function to create a session with retries
+def create_session_with_retries(retries=3, backoff_factor=0.3, status_forcelist=(500, 502, 504)):
+    session = requests.Session()
+    retry = Retry(
+        total=retries,
+        read=retries,
+        connect=retries,
+        backoff_factor=0.3,
+        status_forcelist=status_forcelist,
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=100, pool_maxsize=100)
+    session.mount('http://', adapter)
+    session.mount('https://', adapter)
+    return session
+
+# Function to get the IUCN status
+def fetch_iucn_status(taxon_id, session):
+    url = f"https://api.gbif.org/v1/species/{taxon_id}/iucnRedListCategory"
+    try:
+        response = session.get(url)
+        if response.status_code == 200:
+            data = response.json()
+            return data.get('category', 'UNKNOWN')
+        else:
+            return 'UNKNOWN'
+    except requests.ConnectionError:
+        return 'UNKNOWN'
+
+# Main function to add the IUCN column
+def add_iucn_status_column(df, id_column='taxonID', delay=0.1, max_workers=20):
+    taxon_ids = df[id_column].tolist()
+    iucn_status_dict = {}
+    session = create_session_with_retries()
+
+    # Fetch IUCN statuses
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_id = {executor.submit(fetch_iucn_status, taxon_id, session): taxon_id for taxon_id in taxon_ids}
+        total = len(taxon_ids)
+        completed = 0
+        for future in as_completed(future_to_id):
+            taxon_id = future_to_id[future]
+            status = future.result()
+            iucn_status_dict[taxon_id] = status
+            completed += 1
+            progress = (completed / total) * 100
+            print(f"\rProgress: {progress:.2f}%", end="")
+            time.sleep(delay)
+
+    # Map IUCN status to original DataFrame
+    df_ = df.copy()
+    df_['iucnRedListCategory'] = df_[id_column].map(lambda x: iucn_status_dict.get(x, 'UNKNOWN'))
+    print()  # Move to the next line after completion
+    return df_
+
+
+
+def load_a3cat_dataframe(ncbi_filtered):
+    url = 'https://a3cat.unil.ch'
+    
+    # Fare la richiesta HTTP al sito web
+    response = requests.get(url)
+    response.raise_for_status()  # Assicurarsi che la richiesta abbia avuto successo
+
+    # Fare il parsing del contenuto HTML
+    soup = BeautifulSoup(response.content, 'html.parser')
+
+    # Trovare l'elemento con l'ID specificato
+    version_tag = soup.find(id="header-version")
+    
+    if version_tag:
+        # Estrarre la versione
+        version = version_tag.text.strip()
+        # Estrarre la data dalla versione
+        date = version.split('v.')[1]
+        # Generare il link del file
+        download_link = f"{url}/data/a3cat/{date}.tsv"
+        
+        # Scaricare il file e caricare i dati in un DataFrame pandas
+        df = pd.read_csv(download_link, sep='\t')
+        a3cat = ncbi_filtered[ncbi_filtered.ncbi_id.astype(int).isin(df.TaxId)]
+        print(f"a3cat {version} downloaded")
+        return a3cat
+    else:
+        print("Last version not found, please download the dataset manually")
+        return None
+
+
+def get_bees_from_beebiome_dataframe(ncbi_filtered):
+    # URL dell'API da cui estrarre i dati
+    url = "https://beebiome.org/beebiome/sample/all"
+    
+    # Effettua la richiesta all'API
+    response = requests.get(url)
+    
+    # Verifica se la richiesta è andata a buon fine
+    if response.status_code == 200:
+        # Converte la risposta in formato JSON
+        data = response.json()
+    
+        # Estrai tutti gli ID degli host
+        host_ids = [sample['host']['id'] for sample in data if 'host' in sample and 'id' in sample['host']]
+    
+        # Stampa gli ID degli host
+        beebiome_ids = (list(set(host_ids)))
+        return ncbi_filtered[ncbi_filtered.ncbi_id.astype(int).isin(beebiome_ids)]
+    else:
+        print("Error in request:", response.status_code)
