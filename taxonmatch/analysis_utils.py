@@ -69,11 +69,11 @@ def get_gbif_synonyms(gbif_dataset):
 
 
 def get_ncbi_synonyms(names_path):
-    scientific_names = {}  # Mappa ogni TaxID al suo nome scientifico
-    ncbi_synonyms_names = {}  # Dizionario che mappa i nomi scientifici ai loro sinonimi e altri nomi
-    ncbi_synonyms_ids = {}  # Dizionario che mappa gli ID ai loro sinonimi e altri nomi
+    scientific_names = {}  # Map each TaxID to its scientific name
+    ncbi_synonyms_names = {}  # Dictionary that maps scientific names to their synonyms and other names
+    ncbi_synonyms_ids = {}  # Dictionary that maps IDs to their synonyms and other names
 
-    # Prima passata: identifica i nomi scientifici per ciascun TaxID
+    # First step: Identify scientific names for each TaxID
     with open(names_path, 'r') as names_file:
         for line in names_file:
             parts = line.strip().split('|')
@@ -85,10 +85,10 @@ def get_ncbi_synonyms(names_path):
                 scientific_names[taxid] = name
                 if name not in ncbi_synonyms_names:
                     ncbi_synonyms_names[name] = []
-                if taxid not in ncbi_synonyms_ids:  # Inizializza anche la lista per l'ID nel dizionario ncbi_synonyms_ids
+                if taxid not in ncbi_synonyms_ids:  # Also initialize the list for the ID in the ncbi_synonyms_ids dictionary
                     ncbi_synonyms_ids[taxid] = []
 
-    # Seconda passata: associa gli altri nomi ai nomi scientifici e agli ID corrispondenti
+    # Second step: Match the other names to the corresponding scientific names and IDs
     with open(names_path, 'r') as names_file:
         for line in names_file:
             parts = line.strip().split('|')
@@ -105,12 +105,12 @@ def get_ncbi_synonyms(names_path):
                     # Aggiunge il nome al dizionario ncbi_synonyms_ids sotto l'ID corrispondente
                     ncbi_synonyms_ids[taxid].append(name)
 
-    # Definisci il percorso della directory e il nome del file
+    # Define the directory path and file name
     directory = './files/dictionaries'
     filename = 'ncbi_dictionaries.pkl'
     file_path = os.path.join(directory, filename)
 
-    # Assicurati che la directory esista; in caso contrario, creala
+    # Make sure the directory exists; if not, create it
     if not os.path.exists(directory):
         os.makedirs(directory)
 

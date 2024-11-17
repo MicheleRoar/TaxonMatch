@@ -140,7 +140,7 @@ def save_tree(tree, path, output_format='txt'):
         raise ValueError(f"Unsupported format: {output_format}. Supported formats are 'txt', 'newick', and 'json'.")
 
 
-def index_tree(node, index_list=None, include_name=True):
+def index_tree(node, index_list=None, include_name=False):
     """
     Recursively indexes a tree, assigning each node a hierarchical index based on its position within the tree.
     
@@ -427,11 +427,11 @@ def convert_tree_to_dataframe(tree, query_dataset, target_dataset, path, index=F
     final_dataset_ = final_dataset_.replace([-1, '-1', ""], None)
     
     # Select and rename columns
-    final_dataset_ = final_dataset_[["id", "Index", "ncbi_id", "gbif_taxon_id", "ncbi_canonicalName", "canonicalName", 'gbif_synonyms_ids', "gbif_synonyms_names", "ncbi_synonyms_names"]]
-    final_dataset_.columns = ["id", "path", "ncbi_taxon_id", "gbif_taxon_id", "ncbi_canonical_name", "gbif_canonical_name", "gbif_synonyms_ids", "gbif_synonyms_names", "ncbi_synonyms_names"]
+    final_dataset_ = final_dataset_[["id", "Index", "ncbi_id", "gbif_taxon_id", "ncbi_canonicalName", "canonicalName", 'gbif_synonyms_ids', "gbif_synonyms_names", "ncbi_synonyms_names", "gbif_taxonomy", "ncbi_target_string"]]
+    final_dataset_.columns = ["id", "path", "ncbi_taxon_id", "gbif_taxon_id", "ncbi_canonical_name", "gbif_canonical_name", "gbif_synonyms_ids", "gbif_synonyms_names", "ncbi_synonyms_names", "gbif_taxonomy", "ncbi_target_string"]
     
     final_dataset_.to_csv(path, index=False)  # Save the final dataset to a CSV
-
+    return final_dataset_
 
 
 
@@ -494,4 +494,8 @@ def find_synonyms(input_term, ncbi_data, gbif_data):
         'GBIF Synonyms': list(set(gbif_synonyms)),
         'NCBI Synonyms': list(set(ncbi_synonyms))
     }
-    return final_dataset_
+    
+
+
+
+    

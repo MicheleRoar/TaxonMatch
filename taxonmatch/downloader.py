@@ -15,10 +15,9 @@ from requests.packages.urllib3.util.retry import Retry
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
-
 def create_gbif_taxonomy(row):
     """
-    Create a taxonomy string for GBIF data.
+    Create a taxonomy string for GBIF data, handling special cases and avoiding redundancy.
 
     Args:
     row (pd.Series): A row from the GBIF DataFrame.
@@ -26,19 +25,35 @@ def create_gbif_taxonomy(row):
     Returns:
     str: A semicolon-separated string of taxonomy levels.
     """
+    # List of taxonomic levels in hierarchical order
+    taxonomy_levels = ['phylum', 'class', 'order', 'family', 'genus']
+    
+    # Build the base taxonomy string
+    base_taxonomy = ";".join([str(row[level]).lower() for level in taxonomy_levels if pd.notna(row[level])])
+    
+    # Check if canonicalName is already included in the base taxonomy
+    if pd.notna(row['canonicalName']):
+        canonical_lower = str(row['canonicalName']).lower()
+        if canonical_lower in base_taxonomy.split(";"):
+            return base_taxonomy  # Avoid adding duplicate canonicalName
+    
+    # Case for subspecies
     if row['taxonRank'] == "subspecies":
         if pd.isna(row['canonicalName']):
             species = ""
         else:
             species = " ".join(row['canonicalName'].split(" ")[:2]).lower()
-        return f"{row['phylum']};{row['class']};{row['order']};{row['family']};{row['genus']};{species};{row['canonicalName']}".lower()
-    elif row['taxonRank'] in ['species', "variety"]:
-        if pd.isna(row['canonicalName']):
-            return f"{row['phylum']};{row['class']};{row['order']};{row['family']};{row['genus']}".lower()
-        else:
-            return f"{row['phylum']};{row['class']};{row['order']};{row['family']};{row['genus']};{row['canonicalName']}".lower()
-    else:
-        return f"{row['phylum']};{row['class']};{row['order']};{row['family']};{row['genus']}".lower()
+        return f"{base_taxonomy};{species};{row['canonicalName'].lower()}" if pd.notna(row['canonicalName']) else base_taxonomy
+    
+    # Case for species or variety ranks
+    if row['taxonRank'] in ['species', 'variety']:
+        return f"{base_taxonomy};{str(row['canonicalName']).lower()}" if pd.notna(row['canonicalName']) else base_taxonomy
+    
+    # General case: Add canonicalName if not redundant
+    if pd.notna(row['canonicalName']):
+        return f"{base_taxonomy};{str(row['canonicalName']).lower()}"
+    
+    return base_taxonomy
 
 
 def find_all_parents(taxon_id, parents_dict):
@@ -190,9 +205,6 @@ def download_gbif_taxonomy(output_folder=None, source = None):
     return gbif_subset, gbif_full
 
 
-
-
-
 def prepare_ncbi_strings(row):
     """
     Prepare NCBI taxonomy strings.
@@ -212,17 +224,45 @@ def prepare_ncbi_strings(row):
     
     return new_string.lower()
 
-def remove_extra_separators(s):
+
+
+def generate_cleaned_ncbi_string(row, target_ranks):
     """
-    Remove extra semicolons from a string.
+    Generate a cleaned NCBI taxonomy string with canonical name if applicable,
+    and handle specific ranks like species, subspecies, and strain.
 
     Args:
-    s (str): The string to process.
+    row (pd.Series): A row from the NCBI DataFrame.
+    target_ranks (set): The set of target ranks to include in the string.
 
     Returns:
-    str: The string with extra semicolons removed.
+    str: A cleaned taxonomy string.
     """
-    return re.sub(r';+', ';', s)
+    # Split lineage names and ranks
+    names = row['ncbi_lineage_names'].split(';')
+    ranks = row['ncbi_lineage_ranks'].split(';')
+    
+    # Build the target string based on specified ranks
+    target_string_parts = [name for name, rank in zip(names, ranks) if rank in target_ranks]
+
+    # Handle empty target_string_parts case
+    if not target_string_parts:
+        return row['ncbi_canonicalName'].lower()
+
+    # Handle special case for species, subspecies, strain
+    if row['ncbi_rank'] in ['species', 'subspecies', 'strain']:
+        if row['ncbi_canonicalName'].lower() != target_string_parts[-1].lower():
+            new_string = ';'.join(target_string_parts) + ';' + row['ncbi_canonicalName']
+        else:
+            new_string = ';'.join(target_string_parts)
+    else:
+        if row['ncbi_canonicalName'].lower() != target_string_parts[-1].lower():
+            new_string = ';'.join(target_string_parts) + ';' + row['ncbi_canonicalName']
+        else:
+            new_string = ';'.join(target_string_parts)
+    
+    return new_string.lower()
+
 
 
 def download_ncbi_taxonomy(output_folder=None, source=None):
@@ -340,7 +380,7 @@ def download_ncbi_taxonomy(output_folder=None, source=None):
         parent_map = pd.Series(nodes_df['parent_tax_id'].values, index=nodes_df['ncbi_id']).to_dict()
         rank_map = pd.Series(nodes_df['rank'].values, index=nodes_df['ncbi_id']).to_dict()
         
-        # Aggiungere le colonne per il nome scientifico e il rango diretti
+        # Add columns for direct scientific name and rank
         nodes_df['ncbi_canonicalName'] = nodes_df['ncbi_id'].apply(lambda x: name_map.get(x, ''))
         nodes_df['ncbi_rank'] = nodes_df['ncbi_id'].apply(lambda x: rank_map.get(x, ''))
         
@@ -364,15 +404,12 @@ def download_ncbi_taxonomy(output_folder=None, source=None):
         
         # Define target ranks and build target strings based on ranks
         target_ranks = {'phylum', 'class', 'order', 'family', 'genus', 'species', 'subspecies'}
-        
-        def build_target_string(names, ranks):
-            names = names.split(';')
-            ranks = ranks.split(';')
-            return ';'.join(name for name, rank in zip(names, ranks) if rank in target_ranks).lower()
-        
+
         nodes_df['ncbi_target_string'] = nodes_df.apply(
-            lambda row: build_target_string(row['ncbi_lineage_names'], row['ncbi_lineage_ranks']), axis=1)
-        
+            lambda row: generate_cleaned_ncbi_string(row, target_ranks), axis=1
+        )   
+
+
         # Prepare final subsets for return
         ncbi_full = nodes_df[['ncbi_id', 'ncbi_lineage_names', 'ncbi_lineage_ids', 'ncbi_canonicalName', 'ncbi_rank', 'ncbi_lineage_ranks', 'ncbi_target_string']]
         ncbi_subset = ncbi_full.copy()
@@ -452,25 +489,25 @@ def add_iucn_status_column(df, id_column='taxonID', delay=0.1, max_workers=20):
 def load_a3cat_dataframe(ncbi_filtered):
     url = 'https://a3cat.unil.ch'
     
-    # Fare la richiesta HTTP al sito web
+    # Make the HTTP request to the website
     response = requests.get(url)
     response.raise_for_status()  # Assicurarsi che la richiesta abbia avuto successo
 
-    # Fare il parsing del contenuto HTML
+    # Parse HTML content
     soup = BeautifulSoup(response.content, 'html.parser')
 
-    # Trovare l'elemento con l'ID specificato
+    # Find the item with the specified ID
     version_tag = soup.find(id="header-version")
     
     if version_tag:
-        # Estrarre la versione
+        # Extract the version
         version = version_tag.text.strip()
-        # Estrarre la data dalla versione
+        # Extract date from version
         date = version.split('v.')[1]
-        # Generare il link del file
+        # Generate file link
         download_link = f"{url}/data/a3cat/{date}.tsv"
         
-        # Scaricare il file e caricare i dati in un DataFrame pandas
+        # Download the file and load the data into a pandas DataFrame
         df = pd.read_csv(download_link, sep='\t')
         a3cat = ncbi_filtered[ncbi_filtered.ncbi_id.astype(int).isin(df.TaxId)]
         print(f"a3cat {version} downloaded")
@@ -480,23 +517,149 @@ def load_a3cat_dataframe(ncbi_filtered):
         return None
 
 
+
+def load_inat_samples(inat_path_file):
+    """
+    Load iNaturalist samples from a file and process them.
+
+    Args:
+    inat_path_file (str): Path to the iNaturalist taxa CSV file.
+
+    Returns:
+    DataFrame: Processed DataFrame of iNaturalist data filtered for Arthropoda.
+    """
+
+    def animate_dots():
+        """
+        Animate a sequence of dots on the console to indicate processing activity.
+        """
+        dots = ["   ", ".  ", ".. ", "..."]
+        idx = 0
+        print("Processing samples", end="")
+        while not done_event.is_set():
+            print(f"\rProcessing samples{dots[idx % len(dots)]}", end="", flush=True)
+            time.sleep(0.5)
+            idx += 1
+
+    # Start animated dots
+    done_event = threading.Event()
+    thread = threading.Thread(target=animate_dots)
+    thread.start()
+
+    try:
+        # Load and filter data
+        columns_of_interest = [
+            "id", "parentNameUsageID", "kingdom", "phylum", "class", "order",
+            "family", "genus", "specificEpithet", "infraspecificEpithet",
+            "modified", "scientificName", "taxonRank"
+        ]
+
+        inat_full = pd.read_csv(inat_path_file, usecols=columns_of_interest, low_memory=False)
+        inat_full.rename(columns={"scientificName": "canonicalName"}, inplace=True)
+        inat_full['inat_taxonomy'] = inat_full.apply(create_gbif_taxonomy, axis=1)
+
+
+        cols = list(inat_full.columns)
+
+        inat_filterd = inat_full[~inat_full.taxonRank.isin(["subspecies", "species", "genus", "class", "family", "order", "phylum", "kingdom"])]
+
+        # Filter duplicate rows based on "inat_scientificName"
+        duplicates = inat_full[inat_full["canonicalName"].duplicated(keep=False)]
+
+        # Count non-NaN values for each row
+        duplicates_=duplicates.copy()
+        duplicates_["non_null_count"] = duplicates.notna().sum(axis=1)
+
+        # Sort by "inat_scientificName" and then by the number of non-NaN values (descending)
+        preferred = duplicates_.sort_values(["canonicalName", "non_null_count"], ascending=[True, False])
+
+        # Keep only the row with the most non-NaN values for each "inat_scientificName
+        final_result = preferred.drop_duplicates(subset="canonicalName", keep="first")
+
+
+        non_duplicates = inat_full[~inat_full["canonicalName"].duplicated(keep=False)]
+        combined = pd.concat([final_result, non_duplicates])[cols]
+
+        combined.columns = ['inat_taxon_id', 'inat_parentNameUsageID', 'kingdom', 'phylum',
+               'class', 'order', 'family', 'genus', 'specificEpithet',
+               'infraspecificEpithet', 'inat_modified', 'inat_canonical_name', 'inat_taxonRank',
+               'inat_taxonomy']
+
+    finally:
+        done_event.set()
+        thread.join()
+        print("\rProcessing samples...")
+        print("Done.")
+    
+    return combined
+
+
+def download_inat_taxonomy(output_folder=None):
+    """
+    Download the iNaturalist taxonomy dataset, extract the relevant CSV, and process it.
+
+    Args:
+    output_folder (str, optional): The folder where the dataset will be downloaded.
+                                   Defaults to the current working directory.
+
+    Returns:
+    DataFrame: Processed DataFrame containing Arthropoda taxa.
+    """
+
+
+    if output_folder is None:
+        output_folder = os.getcwd()
+
+    inat_output_folder = os.path.join(output_folder, 'iNaturalist_output')
+    tsv_path = os.path.join(inat_output_folder, 'taxa.csv')
+
+    if os.path.exists(tsv_path):
+        print("iNaturalist taxonomy data already downloaded.")
+    else:
+        os.makedirs(inat_output_folder, exist_ok=True)
+
+        url = "https://www.inaturalist.org/taxa/inaturalist-taxonomy.dwca.zip"
+        filename = os.path.join(output_folder, "inaturalist_taxonomy.zip")
+
+
+        # Download with progress bar
+        with tqdm(unit='B', unit_scale=True, unit_divisor=1024, miniters=1, desc="Downloading iNaturalist Taxonomic Data") as pbar:
+            def report_hook(blocknum, blocksize, totalsize):
+                pbar.update(blocknum * blocksize - pbar.n)
+            urllib.request.urlretrieve(url, filename, reporthook=report_hook)
+
+        with zipfile.ZipFile(filename, 'r') as zip_ref:
+            zip_ref.extract('taxa.csv', inat_output_folder)
+
+        if os.path.exists(tsv_path):
+            os.remove(filename)
+        else:
+            raise RuntimeError("Error saving taxa.csv. Consider raising an issue on Github.")
+
+
+
+    return load_inat_samples(tsv_path)
+
+
 def get_bees_from_beebiome_dataframe(ncbi_filtered):
-    # URL dell'API da cui estrarre i dati
+    # API URL to extract data from
     url = "https://beebiome.org/beebiome/sample/all"
     
-    # Effettua la richiesta all'API
+    # Make the request to the API
     response = requests.get(url)
     
-    # Verifica se la richiesta è andata a buon fine
+    # Check if the request was successful
     if response.status_code == 200:
-        # Converte la risposta in formato JSON
+        # Convert the response to JSON format
         data = response.json()
     
-        # Estrai tutti gli ID degli host
+        # Extract all host IDs
         host_ids = [sample['host']['id'] for sample in data if 'host' in sample and 'id' in sample['host']]
     
-        # Stampa gli ID degli host
+        # Print host IDs
         beebiome_ids = (list(set(host_ids)))
         return ncbi_filtered[ncbi_filtered.ncbi_id.astype(int).isin(beebiome_ids)]
     else:
         print("Error in request:", response.status_code)
+
+

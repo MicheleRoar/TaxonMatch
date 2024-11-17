@@ -194,18 +194,18 @@ def tuple_engineer_features(tuple_list, distance_list=None):
     result = []
 
     for tuple_data in tuple_list:
-        gbif_name = str(tuple_data[0]).lower()
-        ncbi_name = str(tuple_data[1]).lower()
+        query_name = str(tuple_data[0]).lower()
+        target_name = str(tuple_data[1]).lower()
         score = tuple_data[2]
-        feature_row = {'gbif_name': gbif_name, 'ncbi_name': ncbi_name, 'score': score}
+        feature_row = {'query_name': query_name, 'target_name': target_name, 'score': score}
 
         for col_name in distance_list:
             if col_name in distances:
                 distance_function = distances[col_name]
-                feature_row[col_name] = distance_function(gbif_name, ncbi_name)
+                feature_row[col_name] = distance_function(query_name, target_name)
             elif col_name in fuzzy_ratios:
                 ratio_function = fuzzy_ratios[col_name]
-                feature_row[col_name] = ratio_function(gbif_name, ncbi_name)
+                feature_row[col_name] = ratio_function(query_name, target_name)
 
         result.append(feature_row)
 
