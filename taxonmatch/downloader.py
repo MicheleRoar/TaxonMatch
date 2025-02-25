@@ -27,33 +27,69 @@ def create_gbif_taxonomy(row):
     """
     # List of taxonomic levels in hierarchical order
     taxonomy_levels = ['phylum', 'class', 'order', 'family', 'genus']
-    
+
     # Build the base taxonomy string
     base_taxonomy = ";".join([str(row[level]).lower() for level in taxonomy_levels if pd.notna(row[level])])
-    
+
     # Check if canonicalName is already included in the base taxonomy
     if pd.notna(row['canonicalName']):
         canonical_lower = str(row['canonicalName']).lower()
         if canonical_lower in base_taxonomy.split(";"):
             return base_taxonomy  # Avoid adding duplicate canonicalName
-    
-    # Case for subspecies
-    if row['taxonRank'] == "subspecies":
-        if pd.isna(row['canonicalName']):
-            species = ""
-        else:
-            species = " ".join(row['canonicalName'].split(" ")[:2]).lower()
-        return f"{base_taxonomy};{species};{row['canonicalName'].lower()}" if pd.notna(row['canonicalName']) else base_taxonomy
-    
-    # Case for species or variety ranks
-    if row['taxonRank'] in ['species', 'variety']:
+
+    # Case for subspecies, variety, and form (all treated as subspecies)
+    if row['taxonRank'] in ["subspecies", "variety", "form"]:
+        if pd.notna(row['canonicalName']):
+            species = " ".join(row['canonicalName'].split(" ")[:2]).lower()  # Extract species name
+            return f"{base_taxonomy};{species};{row['canonicalName'].lower()}"
+
+    # Case for species
+    if row['taxonRank'] == 'species':
         return f"{base_taxonomy};{str(row['canonicalName']).lower()}" if pd.notna(row['canonicalName']) else base_taxonomy
-    
+
     # General case: Add canonicalName if not redundant
     if pd.notna(row['canonicalName']):
         return f"{base_taxonomy};{str(row['canonicalName']).lower()}"
-    
+
     return base_taxonomy
+
+
+def clean_taxonomy_dataframe(df):
+    """
+    Filters a taxonomy DataFrame to ensure consistency between `canonicalName` and `genus`.
+    Specifically, for rows where `taxonRank` is "species", "subspecies", "variety", or "form",
+    it removes rows where the first part of `canonicalName` does not match `genus`.
+
+    ###### Issues: Name parent mismatch #######
+
+    Args:
+        df (pd.DataFrame): Input taxonomy DataFrame.
+
+    Returns:
+        pd.DataFrame: Cleaned taxonomy DataFrame.
+    """
+    # Taxon ranks to filter
+    taxa_to_check = ["species", "subspecies", "variety", "form"]
+
+    # Filter rows where taxonRank is in the specified categories
+    df_filtered = df[df["taxonRank"].isin(taxa_to_check)]
+
+    # Keep only rows where the first part of canonicalName matches genus
+    df_filtered = df_filtered[
+        df_filtered.apply(
+            lambda row: str(row["canonicalName"]).split(" ")[0] == str(row["genus"]), axis=1
+        )
+    ]
+
+    # Combine with rows that are not in the specified categories
+    df_final = pd.concat(
+        [
+            df[~df["taxonRank"].isin(taxa_to_check)],
+            df_filtered,
+        ]
+    ).reset_index(drop=True)
+
+    return df_final
 
 
 def find_all_parents(taxon_id, parents_dict):
@@ -127,24 +163,29 @@ def load_gbif_samples(gbif_path_file, source = None):
         # Filter the DataFrame
         gbif_subset = gbif_full.query("taxonomicStatus == 'accepted' & taxonRank != 'unranked'").fillna('').drop_duplicates(subset=gbif_full.columns[1:], keep='first')
     
+        gbif_subset_cleaned = clean_taxonomy_dataframe(gbif_subset)
+
         # Process the taxonomy data
-        gbif_subset['gbif_taxonomy'] = gbif_subset.apply(create_gbif_taxonomy, axis=1)
-        gbif_subset['gbif_taxonomy'] = gbif_subset['gbif_taxonomy'].str.replace(r'(\W)\1+', r'\1', regex=True)
+        gbif_subset_cleaned['gbif_taxonomy'] = gbif_subset_cleaned['gbif_taxonomy'].str.replace(r'(\W)\1+', r'\1', regex=True)
     
         # Remove trailing and leading semicolons
-        gbif_subset['gbif_taxonomy'] = gbif_subset['gbif_taxonomy'].str.rstrip(';').str.lstrip(';')
+        gbif_subset_cleaned['gbif_taxonomy'] = gbif_subset_cleaned['gbif_taxonomy'].str.rstrip(';').str.lstrip(';')
     
         # Remove rows with only semicolons
-        gbif_subset.loc[gbif_subset['gbif_taxonomy'] == ';', 'gbif_taxonomy'] = ''
-        gbif_subset = gbif_subset.drop_duplicates(subset="gbif_taxonomy")
+        gbif_subset_cleaned.loc[gbif_subset_cleaned['gbif_taxonomy'] == ';', 'gbif_taxonomy'] = ''
+        gbif_subset_cleaned = gbif_subset_cleaned.drop_duplicates(subset="gbif_taxonomy")
     
         # Handle missing parent IDs
         #gbif_subset['parentNameUsageID'] = gbif_subset['parentNameUsageID'].replace('', np.nan).fillna(-1).astype(int)
-        gbif_subset['parentNameUsageID'] = np.where(gbif_subset['parentNameUsageID'] == '', -1, gbif_subset['parentNameUsageID']).astype(int)
+        gbif_subset_cleaned['parentNameUsageID'] = np.where(gbif_subset_cleaned['parentNameUsageID'] == '', -1, gbif_subset_cleaned['parentNameUsageID']).astype(int)
     
     
-        parents_dict = dict(zip(gbif_subset['taxonID'], gbif_subset['parentNameUsageID']))
-        gbif_subset['gbif_taxonomy_ids'] = gbif_subset.apply(lambda x: find_all_parents(x['taxonID'], parents_dict), axis=1)
+        parents_dict = dict(zip(gbif_subset_cleaned['taxonID'], gbif_subset_cleaned['parentNameUsageID']))
+        gbif_subset_cleaned['gbif_taxonomy_ids'] = gbif_subset_cleaned.apply(lambda x: find_all_parents(x['taxonID'], parents_dict), axis=1)
+
+        # Remove rows where the number of elements in gbif_taxonomy and gbif_taxonomy_ids do not match
+        gbif_subset_cleaned = gbif_subset_cleaned[
+        gbif_subset_cleaned.apply(lambda x: len(str(x['gbif_taxonomy']).split(';')) == len(str(x['gbif_taxonomy_ids']).split(';')), axis=1)]
 
     finally:
         done_event.set()
@@ -152,7 +193,7 @@ def load_gbif_samples(gbif_path_file, source = None):
         print("\rProcessing samples...")
         print("Done.")
     
-    return gbif_subset, gbif_full
+    return gbif_subset_cleaned, gbif_full
 
 
 def download_gbif_taxonomy(output_folder=None, source = None):
@@ -491,7 +532,7 @@ def load_a3cat_dataframe(ncbi_filtered):
     
     # Make the HTTP request to the website
     response = requests.get(url)
-    response.raise_for_status()  # Assicurarsi che la richiesta abbia avuto successo
+    response.raise_for_status()  
 
     # Parse HTML content
     soup = BeautifulSoup(response.content, 'html.parser')
@@ -639,6 +680,65 @@ def download_inat_taxonomy(output_folder=None):
 
 
     return load_inat_samples(tsv_path)
+
+
+
+def select_inat_clade(inat_dataset, selected_string):
+    """
+    Filters a dataset based on a selected taxonomic string and modifies the 'inat_taxonomy' column
+    to include only the information from the selected string onward.
+
+    Args:
+        inat_dataset (DataFrame): Dataset containing a column 'inat_taxonomy'.
+        selected_string (str): Taxonomic string (e.g., family, genus, order, etc.) to filter and modify.
+
+    Returns:
+        DataFrame: A filtered dataset with the 'inat_taxonomy' column modified.
+
+    Raises:
+        ValueError: If the selected string is not found as an exact match in the 'inat_taxonomy' column.
+    """
+
+    # Function to modify the taxonomy string
+    def modify_inat_taxonomy(taxonomy, selected_string):
+        """
+        Truncates the taxonomy string to start from the selected string onward.
+
+        Args:
+            taxonomy (str): Full taxonomy string.
+            selected_string (str): Taxonomic string to truncate from.
+
+        Returns:
+            str: Modified taxonomy string starting from the selected string, or the original string if not found.
+        """
+        parts = taxonomy.split(';')
+        if selected_string.lower() in [p.lower() for p in parts]:
+            index = [p.lower() for p in parts].index(selected_string.lower())
+            return ';'.join(parts[index:])  # Keep everything from the selected string onward
+        return taxonomy  # Return the original string if not found
+
+    # Filter the dataset where 'inat_taxonomy' contains the exact selected string
+    def contains_exact_taxon(taxonomy, selected_string):
+        parts = taxonomy.split(';')
+        return selected_string.lower() in [p.lower() for p in parts]
+
+    # Apply filtering for exact matches
+    filtered_dataset = inat_dataset[
+        inat_dataset['inat_taxonomy'].apply(lambda x: contains_exact_taxon(x, selected_string))
+    ].copy()
+
+    # Raise an error if the selected string is not found in any row
+    if filtered_dataset.empty:
+        raise ValueError(
+            f"The selected string '{selected_string}' was not found as an exact match in the 'inat_taxonomy' column."
+        )
+
+    # Modify the 'inat_taxonomy' column in the filtered dataset
+    filtered_dataset['inat_taxonomy'] = filtered_dataset['inat_taxonomy'].apply(
+        lambda x: modify_inat_taxonomy(x, selected_string)
+    )
+
+    return filtered_dataset
 
 
 def get_bees_from_beebiome_dataframe(ncbi_filtered):

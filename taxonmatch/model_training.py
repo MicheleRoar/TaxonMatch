@@ -30,8 +30,9 @@ from sklearn.model_selection import train_test_split
 from sklearn.model_selection import GridSearchCV
 
 
-def generate_positive_set(gbif_dataset, ncbi_dataset, n):
 
+
+def generate_positive_set(gbif_dataset, ncbi_dataset, n):
     """
     Generate a set of positive matches by merging GBIF and NCBI datasets based on canonical names.
 
@@ -41,61 +42,38 @@ def generate_positive_set(gbif_dataset, ncbi_dataset, n):
     n (int): The number of samples to generate.
 
     Returns:
-    pd.DataFrame: A DataFrame containing positive matches with both taxonomy strings and a match flag.
+    pd.DataFrame: A DataFrame containing positive matches with taxonomy strings and a match flag.
     """
-
+    
     # Merge datasets on canonical names to identify positive matches.
-    matched_df = gbif_dataset[0].merge(ncbi_dataset[0], left_on='canonicalName', right_on= 'ncbi_canonicalName', how='inner')
-
-    # Identifying duplicates and species with more than one kingdom classification.
+    matched_df = gbif_dataset[0].merge(ncbi_dataset[0], left_on='canonicalName', right_on='ncbi_canonicalName', how='inner')
+    
+    # Identifying duplicates in NCBI
     duplicates = matched_df[matched_df.duplicated(subset='ncbi_canonicalName', keep=False)]
+    
+    # Identifying species with more than one kingdom classification
     double_cN = matched_df.groupby('canonicalName').filter(lambda x: len(set(x['kingdom'])) > 1)
+
+    # Combine both lists into a set to remove duplicates
     doubles_list = list(set(duplicates.canonicalName) | set(double_cN.canonicalName))
 
-    # Selecting true pairs for classifier.
-    positive_matches = matched_df[~matched_df["canonicalName"].isin(list(set(double_cN.canonicalName)))]
-    positive_matches = positive_matches[["gbif_taxonomy", "ncbi_target_string", "ncbi_rank"]]
+    # Selecting true pairs for classifier, excluding `doubles_list`
+    positive_matches = matched_df[~matched_df["canonicalName"].isin(doubles_list)]
+    positive_matches = positive_matches[["gbif_taxonomy", "ncbi_target_string", "taxonRank", "ncbi_rank"]]
     
     # Sampling exact and not-exact matches.
-    value = round((n/3) *2)
+    value = round((n/3) * 2)
     not_exact = positive_matches.query("ncbi_target_string != gbif_taxonomy & not gbif_taxonomy.str.contains('tracheophyta')").sample(value)
     exact = positive_matches.query("ncbi_target_string == gbif_taxonomy").sample(round(n/3))
     
     # Combining samples and marking them as matches.
     positive_matches = pd.concat([exact, not_exact], axis=0)
     positive_matches["match"] = 1
+    
     return positive_matches
 
 
-def find_most_similar_match(query, strings):
-
-    """
-    Find the most similar string to a given query string from a list of strings, with a similarity threshold.
-
-    Args:
-    query (str): The query string to compare.
-    strings (list of str): A list of strings to compare against the query.
-
-    Returns:
-    tuple: A tuple containing the best match and its similarity score.
-    """
-
-    # Find the string with the highest similarity to the query string, below 85%.
-    best_match = None
-    highest_similarity = 0
-    
-    for string in strings:
-        similarity = rapidfuzz_fuzz.ratio(query, string)
-        if similarity > highest_similarity and similarity < 85:
-            highest_similarity = similarity
-            best_match = string
-    
-    return best_match, highest_similarity
-
-
-
 def generate_negative_set(gbif_dataset, ncbi_dataset, n):
-    
     """
     Generate a set of negative matches for the classifier by sampling and comparing species names.
 
@@ -105,135 +83,155 @@ def generate_negative_set(gbif_dataset, ncbi_dataset, n):
     n (int): The number of negative samples to generate.
 
     Returns:
-    pd.DataFrame: A DataFrame containing negative matches with taxonomy strings and a match flag set to 0.
+    pd.DataFrame: A DataFrame containing negative matches with full taxonomy and a match flag set to 0.
     """
-        
-    # Sampling species names from both datasets.
-    gbif_samples = list(gbif_dataset[0].canonicalName.str.lower())[1:]
+
+    gbif_samples = list(gbif_dataset[0].canonicalName.str.lower())
     ncbi_samples = list(ncbi_dataset[0].ncbi_canonicalName.str.lower())
 
-    species = random.sample([item for item in gbif_samples if len(item.split()) >= 2], round(n/3))
+    # Remove "unknown" values from the NCBI rank
+    ncbi_filtered = ncbi_dataset[0][ncbi_dataset[0].ncbi_rank != "unknown"]
 
-    # Finding non-matching pairs.
-    list_a = species
-    list_b = ncbi_samples
+    num_species_samples = round((n * 2) / 3)  # 2/3 species/subspecies
+    num_other_samples = round(n / 3)  # 1/3 diffreent hierarchies
 
     v = []
-    for item_a in range(len(list_a)):
-        sys.stdout.write('\r samples {} out of {}'.format(item_a + 1, len(list_a)))
+    for i, item_a in enumerate(random.sample(gbif_samples, num_species_samples)):
+        sys.stdout.write(f'\r Generating species matches {i+1}/{num_species_samples}')
         sys.stdout.flush()
 
-        best_match, similarity = find_most_similar_match(list_a[item_a], list_b)
-        v.append((list_a[item_a], best_match, similarity)) 
+        best_match, similarity = find_most_similar_match(item_a, ncbi_samples)
+        v.append((item_a, best_match))
 
-    # Creating a DataFrame from the matched pairs.
-    similarity_df = pd.DataFrame(v, columns=['gbif_sample', 'ncbi_sample', 'similarity score'])
+    similarity_df = pd.DataFrame(v, columns=['gbif_sample', 'ncbi_sample'])
 
-    # Merging with original datasets to get full information.
-    temp_df = similarity_df.merge(gbif_dataset[0], left_on='gbif_sample', right_on=gbif_dataset[0]['canonicalName'].str.lower(), how='left').drop_duplicates("gbif_sample")
-    temp_df2 = temp_df.merge(ncbi_dataset[0], left_on='ncbi_sample', right_on=ncbi_dataset[0]['ncbi_canonicalName'].str.lower(), how='left').drop_duplicates("ncbi_sample")
+    temp_df = similarity_df.merge(
+        gbif_dataset[0], left_on='gbif_sample',
+        right_on=gbif_dataset[0]['canonicalName'].str.lower(),
+        how='left'
+    ).drop_duplicates("gbif_sample")
+
+    temp_df2 = temp_df.merge(
+        ncbi_filtered, left_on='ncbi_sample',
+        right_on=ncbi_filtered['ncbi_canonicalName'].str.lower(),
+        how='left'
+    ).drop_duplicates("ncbi_sample")
+
     temp_df2 = temp_df2.query("gbif_sample != ncbi_sample")
-    false_matches = temp_df2[["gbif_taxonomy", "ncbi_target_string", "ncbi_rank"]].copy()
+
+    false_matches = temp_df2[["gbif_taxonomy", "ncbi_target_string", "taxonRank", "ncbi_rank"]].copy()
     false_matches["match"] = 0
-    
-    # Generating fake matches for subspecies and species.
-    subspecies_list = list(gbif_dataset[0][gbif_dataset[0].taxonRank == "subspecies"].sample(round(n/3)).gbif_taxonomy)
-    species_list = list(gbif_dataset[0][gbif_dataset[0].taxonRank == "species"].sample(round(n/3)).gbif_taxonomy)
-    gbif_fake_list = subspecies_list + species_list
-    
-    spec = [stringa.rsplit(' ', 1)[0] for stringa in subspecies_list]
-    spec_2 = [stringa.rsplit(';', 1)[0] for stringa in species_list]
-    ncbi_fake_matches = spec + spec_2
-    
-    # Combining false and fake matches.
-    fake_matches = pd.DataFrame({'gbif_taxonomy': gbif_fake_list, 'ncbi_target_string': ncbi_fake_matches, "ncbi_rank": "subspecies", "match": 0})
-    negative_set = pd.concat([false_matches, fake_matches], axis=0)
+
+    # Generate pairings for other hierarchies (1/3 of the cases)
+    gbif_higher_taxa = gbif_dataset[0][gbif_dataset[0].taxonRank.isin(["family", "order", "class"])]
+    ncbi_higher_taxa = ncbi_filtered[ncbi_filtered.ncbi_rank.isin(["family", "order", "class"])]
+
+    higher_gbif_samples = gbif_higher_taxa.sample(num_other_samples)
+    higher_ncbi_samples = ncbi_higher_taxa.sample(num_other_samples)
+
+    higher_negative_matches = pd.DataFrame({
+        "gbif_taxonomy": higher_gbif_samples.gbif_taxonomy.values,
+        "ncbi_target_string": higher_ncbi_samples.ncbi_target_string.values,
+        "taxonRank": higher_gbif_samples.taxonRank.values,
+        "ncbi_rank": higher_ncbi_samples.ncbi_rank.values,
+        "match": 0
+    })
+
+    # Combine all negative matches
+    negative_set = pd.concat([false_matches, higher_negative_matches], axis=0).reset_index(drop=True)
 
     return negative_set
 
 
-def tuple_engineer_features(tuple_list, distance_list=None):
+
+# Define taxonomic rank hierarchy
+rank_hierarchy = {
+    "superkingdom": 1, "kingdom": 2, "phylum": 3, "class": 4, "order": 5, 
+    "family": 6, "genus": 7, "species": 8, "subspecies": 9, 
+    "variety": 9, "form": 9
+}
+
+# Distance functions
+distances = {
+    'levenshtein_distance': textdistance.levenshtein,
+    'damerau_levenshtein_distance': textdistance.damerau_levenshtein,
+    'hamming_distance': jf.hamming_distance,
+    'jaro_similarity': textdistance.jaro,
+    'jaro_winkler_similarity': textdistance.jaro_winkler,
+}
+
+# Fuzzy matching functions
+fuzzy_ratios = {
+    'ratio': rapidfuzz_fuzz.ratio,
+    'partial_ratio': rapidfuzz_fuzz.partial_ratio,
+    'token_sort_ratio': rapidfuzz_fuzz.token_sort_ratio,
+    'token_set_ratio': rapidfuzz_fuzz.token_set_ratio,
+    'w_ratio': rapidfuzz_fuzz.WRatio,
+    'q_ratio': rapidfuzz_fuzz.QRatio
+}
+
+# Precompute rank distance similarity mapping
+rank_distance_map = np.array([1.0, 0.8, 0.6, 0.4, 0.2, 0.0])
+
+def compute_rank_similarity(gbif_rank, ncbi_rank):
+    gbif_level = rank_hierarchy.get(gbif_rank, 10)  # Evita `.lower()`
+    ncbi_level = rank_hierarchy.get(ncbi_rank, 10)
+    rank_distance = min(abs(gbif_level - ncbi_level), 5)  # Cap massimo a 5
+    return rank_distance_map[rank_distance]
+
+def compute_similarity_metrics(df):
+    """Vectorized computation of taxonomic and text similarity metrics."""
     
-    """
-    Engineer features by calculating various string distance and similarity measures for given tuples.
+    df = df.rename(columns={"gbif_taxonomy": "query_name", "ncbi_target_string": "target_name"})
+    df["query_name"] = df["query_name"].astype(str).str.lower()
+    df["target_name"] = df["target_name"].astype(str).str.lower()
 
-    Args:
-    tuple_list (list of tuples): List of tuples containing pairs of strings to compare.
-    distance_list (list of str, optional): List of distance/similarity measures to apply.
+    # Compute rank similarity in batch
+    df["rank_similarity"] = np.vectorize(compute_rank_similarity)(
+        df["taxonRank"].values, df["ncbi_rank"].values
+    )
 
-    Returns:
-    list: A list of dictionaries containing the engineered features.
-    """
+    # Preallocate distance arrays
+    num_samples = len(df)
+    all_distances = np.zeros((num_samples, len(distances) + len(fuzzy_ratios)))
 
-    if distance_list is None:
-        distance_list = [
-            'levenshtein_distance', 'damerau_levenshtein_distance', 'hamming_distance', 
-            'jaro_similarity', 'jaro_winkler_similarity', 'ratio', 'partial_ratio',
-            'token_sort_ratio', 'token_set_ratio', 'w_ratio', 'q_ratio'
-        ]
+    query_names = df["query_name"].values
+    target_names = df["target_name"].values
 
-    # Define distance functions.
-    distances = {
-        'levenshtein_distance': textdistance.levenshtein,
-        'damerau_levenshtein_distance': textdistance.damerau_levenshtein,
-        'hamming_distance': jf.hamming_distance,
-        'jaro_similarity': textdistance.jaro,
-        'jaro_winkler_similarity': textdistance.jaro_winkler,
-    }
+    # Compute distances and fuzzy ratios in batch
+    for i, (col_name, func) in enumerate(distances.items()):
+        all_distances[:, i] = [func(q, t) for q, t in zip(query_names, target_names)]
 
-    # Define fuzzy matching functions.
-    fuzzy_ratios = {
-        'ratio': rapidfuzz_fuzz.ratio,
-        'partial_ratio': rapidfuzz_fuzz.partial_ratio,
-        'token_sort_ratio': rapidfuzz_fuzz.token_sort_ratio,
-        'token_set_ratio': rapidfuzz_fuzz.token_set_ratio,
-        'w_ratio': rapidfuzz_fuzz.WRatio,
-        'q_ratio': rapidfuzz_fuzz.QRatio
-    }
+    for i, (col_name, func) in enumerate(fuzzy_ratios.items(), start=len(distances)):
+        all_distances[:, i] = [func(q, t) for q, t in zip(query_names, target_names)]
 
-    result = []
+    # Assign computed distances back to DataFrame
+    all_col_names = list(distances.keys()) + list(fuzzy_ratios.keys())
+    for i, col_name in enumerate(all_col_names):
+        df[col_name] = all_distances[:, i]
 
-    for tuple_data in tuple_list:
-        query_name = str(tuple_data[0]).lower()
-        target_name = str(tuple_data[1]).lower()
-        score = tuple_data[2]
-        feature_row = {'query_name': query_name, 'target_name': target_name, 'score': score}
-
-        for col_name in distance_list:
-            if col_name in distances:
-                distance_function = distances[col_name]
-                feature_row[col_name] = distance_function(query_name, target_name)
-            elif col_name in fuzzy_ratios:
-                ratio_function = fuzzy_ratios[col_name]
-                feature_row[col_name] = ratio_function(query_name, target_name)
-
-        result.append(feature_row)
-
-    return result
-
+    return df
 
 def prepare_data(positive_matches, negative_matches):
-    
     """
-    Prepare the dataset for training by combining positive and negative matches and calculating correlations.
-
+    Optimized version of prepare_data() using batch processing for similarity computation.
+    
     Args:
-    positive_matches (pd.DataFrame): DataFrame of positive matches.
-    negative_matches (pd.DataFrame): DataFrame of negative matches.
+    - positive_matches (pd.DataFrame): Positive matches dataset.
+    - negative_matches (pd.DataFrame): Negative matches dataset.
 
     Returns:
-    tuple: A tuple containing the prepared DataFrame and a list of relevant features.
+    - pd.DataFrame: Dataset with taxonomic similarity features.
     """
-
-    # Concatenating positive and negative matches.
+    # Concatenate positive and negative matches
     full_training_set = pd.concat([positive_matches, negative_matches], ignore_index=True)
-    # Computing similarity measures among samples.
-    output = tuple_engineer_features(full_training_set.values.tolist())
-    df_output = pd.DataFrame(output)
-    df_output["match"] = full_training_set["match"]
-    # Correlation with output variable.
-    cor_target = abs(pd.DataFrame(df_output).corr(numeric_only=True)["match"])
-    relevant_features = list(pd.DataFrame(cor_target).sort_values("match", ascending=False)[1:].index)
+
+    # Compute similarity metrics on the entire DataFrame (vectorized)
+    df_output = compute_similarity_metrics(full_training_set)
+
+    # Add match column back
+    df_output["match"] = full_training_set["match"].values
+
     return df_output
 
 
@@ -255,24 +253,26 @@ def get_confusion_matrix_values(y_test, y_pred):
 
 
 def generate_training_test(df_output):
-    
     """
     Split the data into training and testing sets.
 
     Args:
     df_output (pd.DataFrame): The DataFrame containing the data.
-    relevant_features (list of str): List of relevant features for training.
 
     Returns:
     tuple: A tuple containing training and testing sets (X_train, X_test, y_train, y_test).
     """
 
-    relevant_features=['levenshtein_distance', 'damerau_levenshtein_distance', 'ratio', 'q_ratio', 'token_sort_ratio', 'w_ratio', 'token_set_ratio', 'jaro_winkler_similarity', 'partial_ratio', 'hamming_distance', 'jaro_similarity']
+    # Extract feature columns, excluding non-feature columns
+    feature_columns = [col for col in df_output.columns if col not in ["query_name", "target_name", "taxonRank", "ncbi_rank", "match"]]
 
+    # Extract feature matrix
+    X = df_output[feature_columns].values
+    y = df_output["match"].values
 
-    X = df_output[relevant_features].values
-    y = df_output['match'].values
+    # Train-test split
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=0, stratify=y)
+
     return X_train, X_test, y_train, y_test
 
 def compare_models(X_train, X_test, y_train, y_test):    
@@ -347,7 +347,6 @@ def add_predictions_to_features(features, y_pred):
         features[i]['prediction'] = prediction
 
 def extract_values_from_dict_list(dict_list):
-
     """
     Extract feature values from a list of dictionaries for model training.
 
@@ -360,9 +359,10 @@ def extract_values_from_dict_list(dict_list):
 
     feature_matrix = []
     for comparison in dict_list:
-        # Skipping the first three elements in the dictionary and taking the rest.
-        values_from_third = list(comparison.values())[3:] 
-        feature_matrix.append(values_from_third)
+        # Extract all numerical features, skipping the first three fields (query_name, target_name, score)
+        values_from_fourth = list(comparison.values())[3:]  
+        feature_matrix.append(values_from_fourth)
+
     return feature_matrix
 
 
@@ -394,3 +394,29 @@ def finetune_model(model, param_grid, cv, X_train, X_test, y_train, y_test):
     accuracy = accuracy_score(y_test, y_pred)
     print("Test set accuracy:", accuracy)
     return grid_search.best_params_
+
+
+def find_most_similar_match(query, strings):
+
+    """
+    Find the most similar string to a given query string from a list of strings, with a similarity threshold.
+
+    Args:
+    query (str): The query string to compare.
+    strings (list of str): A list of strings to compare against the query.
+
+    Returns:
+    tuple: A tuple containing the best match and its similarity score.
+    """
+
+    # Find the string with the highest similarity to the query string, below 85%.
+    best_match = None
+    highest_similarity = 0
+    
+    for string in strings:
+        similarity = rapidfuzz_fuzz.ratio(query, string)
+        if similarity > highest_similarity and similarity < 85:
+            highest_similarity = similarity
+            best_match = string
+    
+    return best_match, highest_similarity

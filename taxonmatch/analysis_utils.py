@@ -6,74 +6,75 @@ import os
 from textdistance import levenshtein
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
+from taxonmatch.loader import save_gbif_dictionary, save_ncbi_dictionary
 
 
 def get_gbif_synonyms(gbif_dataset):
     """
-    Extracts synonyms from a GBIF dataset and returns three dictionaries:
-    1. A dictionary mapping accepted IDs to their synonyms (canonical names).
-    2. A dictionary mapping the canonical name of each accepted ID to the canonical names of all associated synonyms.
-    3. A dictionary mapping accepted IDs to the IDs of their synonyms.
+    Extracts synonyms from the GBIF dataset and generates three dictionaries:
+
+    1. A dictionary mapping acceptedNameUsageID to their synonyms (canonical names).
+    2. A dictionary mapping the accepted canonical name to its corresponding synonyms.
+    3. A dictionary mapping acceptedNameUsageID to lists of tuples (synonym name, synonym ID).
     
     Args:
-    gbif_dataset (DataFrame): A pandas DataFrame containing GBIF data.
-    
+    gbif_dataset (DataFrame): GBIF DataFrame.
+
     Returns:
-    tuple: Three dictionaries as described above.
+    tuple: Three dictionaries (synonyms by name, synonyms by ID, synonyms ID → (name, ID)).
     """
     if not isinstance(gbif_dataset[1], pd.DataFrame):
-        raise ValueError("gbif_dataset must be a pandas DataFrame.")
-    
-    # Filter for synonyms
-    df_gbif_synonyms = gbif_dataset[1][gbif_dataset[1]['taxonomicStatus'].str.contains('synonym', na=False)]
-    
+        raise ValueError("gbif_dataset deve essere un pandas DataFrame.")
+
+    # Filter only the synonyms.
+    df_gbif_synonyms = gbif_dataset[1][gbif_dataset[1]['taxonomicStatus'] == 'synonym']
+
     gbif_synonyms_ids = {}
     gbif_synonyms_names = {}
     gbif_synonyms_ids_to_ids = {}  
 
-    # Map each acceptedNameUsageID to its canonicalName
+    # Map taxonID → canonicalName
     id_to_canonical = gbif_dataset[1].set_index('taxonID')['canonicalName'].to_dict()
 
-    for index, row in df_gbif_synonyms.iterrows():
+    for _, row in df_gbif_synonyms.iterrows():
         accepted_id = row['acceptedNameUsageID']
         synonym_canonical_name = row['canonicalName']
         synonym_id = row['taxonID']  
-        
-        # Obtain the canonicalName of the acceptedNameUsageID
+
         accepted_canonical_name = id_to_canonical.get(accepted_id)
 
-        if not pd.isnull(synonym_canonical_name) and not pd.isnull(accepted_canonical_name):
+        if pd.notna(synonym_canonical_name) and pd.notna(accepted_canonical_name):
             gbif_synonyms_ids.setdefault(accepted_id, set()).add(synonym_canonical_name)
             gbif_synonyms_names.setdefault(accepted_canonical_name, set()).add(synonym_canonical_name)
-            gbif_synonyms_ids_to_ids.setdefault(accepted_id, set()).add(synonym_id)
+            gbif_synonyms_ids_to_ids.setdefault(accepted_id, set()).add((synonym_canonical_name, synonym_id))  
 
-    # Convert sets to lists for each key in the dictionaries
+    # Converts sets into lists
     gbif_synonyms_ids = {key: list(value) for key, value in gbif_synonyms_ids.items()}
     gbif_synonyms_names = {key: list(value) for key, value in gbif_synonyms_names.items()}
-    gbif_synonyms_ids_to_ids = {key: list(value) for key, value in gbif_synonyms_ids_to_ids.items()}
+    gbif_synonyms_ids_to_ids = {key: list(value) for key, value in gbif_synonyms_ids_to_ids.items()}  
 
-    # Define the directory path and file name
-    directory = './files/dictionaries'
-    filename = 'gbif_dictionaries.pkl'
-    file_path = os.path.join(directory, filename)
-
-    # Ensure the directory exists; if not, create it
-    if not os.path.exists(directory):
-        os.makedirs(directory)
-
-    # Save the dictionaries in a pickle file
-    with open(file_path, 'wb') as f:
-        pickle.dump((gbif_synonyms_names, gbif_synonyms_ids, gbif_synonyms_ids_to_ids), f)
+    # Save dictionary
+    save_gbif_dictionary(gbif_synonyms_names, gbif_synonyms_ids, gbif_synonyms_ids_to_ids)
 
     return gbif_synonyms_names, gbif_synonyms_ids, gbif_synonyms_ids_to_ids
 
 
 def get_ncbi_synonyms(names_path):
-    scientific_names = {}  # Map each TaxID to its scientific name
-    ncbi_synonyms_names = {}  # Dictionary that maps scientific names to their synonyms and other names
-    ncbi_synonyms_ids = {}  # Dictionary that maps IDs to their synonyms and other names
+    """
+    Extracts synonyms from the NCBI names.dmp file and generates two dictionaries:
 
-    # First step: Identify scientific names for each TaxID
+    A dictionary mapping the scientific name to its synonyms.
+    A dictionary mapping the taxonomic ID to its synonyms.
+    Args:
+    names_path (str): Path to the names.dmp file.
+    Returns:
+    tuple: Two dictionaries (synonyms by name, synonyms by ID).
+    """
+    scientific_names = {}
+    ncbi_synonyms_names = {}
+    ncbi_synonyms_ids = {}
+
+    # Identify scientific names
     with open(names_path, 'r') as names_file:
         for line in names_file:
             parts = line.strip().split('|')
@@ -83,12 +84,10 @@ def get_ncbi_synonyms(names_path):
 
             if name_type == 'scientific name':
                 scientific_names[taxid] = name
-                if name not in ncbi_synonyms_names:
-                    ncbi_synonyms_names[name] = []
-                if taxid not in ncbi_synonyms_ids:  # Also initialize the list for the ID in the ncbi_synonyms_ids dictionary
-                    ncbi_synonyms_ids[taxid] = []
+                ncbi_synonyms_names.setdefault(name, set())
+                ncbi_synonyms_ids.setdefault(taxid, set())
 
-    # Second step: Match the other names to the corresponding scientific names and IDs
+    # Associate synonyms with IDs and names
     with open(names_path, 'r') as names_file:
         for line in names_file:
             parts = line.strip().split('|')
@@ -96,28 +95,19 @@ def get_ncbi_synonyms(names_path):
             name = parts[1].strip().strip("'")
             name_type = parts[3].strip()
 
-            if name_type in ['acronym', 'blast name', 'common name', 'equivalent name', 'genbank acronym', 'genbank common name', 'synonym']:
+            if name_type in {'acronym', 'blast name', 'common name', 'equivalent name', 'genbank acronym', 'genbank common name', 'synonym'}:
                 if taxid in scientific_names:
                     scientific_name = scientific_names[taxid]
-                    # Aggiunge il nome al dizionario ncbi_synonyms_names sotto il nome scientifico corrispondente
                     if name.lower() != scientific_name.lower():
-                        ncbi_synonyms_names[scientific_name].append(name)
-                    # Aggiunge il nome al dizionario ncbi_synonyms_ids sotto l'ID corrispondente
-                    ncbi_synonyms_ids[taxid].append(name)
+                        ncbi_synonyms_names[scientific_name].add(name)
+                        ncbi_synonyms_ids[taxid].add(name)
 
-    # Define the directory path and file name
-    directory = './files/dictionaries'
-    filename = 'ncbi_dictionaries.pkl'
-    file_path = os.path.join(directory, filename)
+    # Convert sets into lists
+    ncbi_synonyms_names = {key: list(value) for key, value in ncbi_synonyms_names.items()}
+    ncbi_synonyms_ids = {key: list(value) for key, value in ncbi_synonyms_ids.items()}
 
-    # Make sure the directory exists; if not, create it
-    if not os.path.exists(directory):
-        os.makedirs(directory)
-
-    with open('./files/dictionaries/ncbi_dictionaries.pkl', 'wb') as f:
-        pickle.dump((ncbi_synonyms_names, ncbi_synonyms_ids), f)
-
-    return ncbi_synonyms_names, ncbi_synonyms_ids
+    # Save dictionaries
+    save_ncbi_dictionary(ncbi_synonyms_names, ncbi_synonyms_ids)
 
 
 def get_inconsistencies(gbif_dataset, ncbi_dataset):

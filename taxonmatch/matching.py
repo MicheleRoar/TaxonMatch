@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.neighbors import NearestNeighbors
-from .model_training import tuple_engineer_features
+from .model_training import compute_similarity_metrics
 from .loader import load_gbif_dictionary, load_ncbi_dictionary
 
 def ngrams(string, n=4):
@@ -115,8 +115,6 @@ def select_taxonomic_clade(clade, gbif_dataset, ncbi_dataset):
     return gbif_clade_, ncbi_clade_
 
 
-
-
 def extract_values_from_dict_list(dict_list):
     feature_matrix = []
 
@@ -149,14 +147,14 @@ def find_neighbors_with_fallback(query, tfidf, vectorizer, max_neighbors=3):
     # If it's not possible to find neighbors, raise an exception
     raise ValueError("Unable to find neighbors with the provided data.")
 
-def find_matching(query_dataset, target_dataset, model, relevant_features, threshold):
 
+def find_matching(query_dataset, target_dataset, model, relevant_features, threshold):
     """
     Matches datasets using a model and calculates the probability of correct matches.
 
     Args:
-    query_dataset (DataFrame): The dataset to query.
-    target_dataset (DataFrame): The dataset to match against.
+    query_dataset (DataFrame): The dataset to query (GBIF).
+    target_dataset (DataFrame): The dataset to match against (NCBI).
     model: The machine learning model used for matching.
     relevant_features: Features relevant to the matching process.
     threshold (float): The threshold for determining a match.
@@ -165,66 +163,89 @@ def find_matching(query_dataset, target_dataset, model, relevant_features, thres
     tuple: DataFrames of matched and unmatched entries.
     """
 
-    target_dataset_2 = target_dataset[~target_dataset['ncbi_canonicalName'].str.contains(r'\d')]
-    
-    target = list(set(target_dataset_2.ncbi_target_string))
+    # Remove taxa with numbers from target dataset (these will be reintroduced later)
+    target_dataset_filtered = target_dataset[~target_dataset['ncbi_canonicalName'].str.contains(r'\d')]
+
+    # Extract unique taxonomic names
+    target = list(set(target_dataset_filtered.ncbi_target_string))
     query = list(set(query_dataset.gbif_taxonomy))
 
-    discarded = []
-    matches_df = []
-
-    # Set up the TF-IDF vectorizer
+    # Set up the TF-IDF vectorizer for textual similarity
     vectorizer = TfidfVectorizer(analyzer=ngrams, lowercase=True)
     tfidf = vectorizer.fit_transform(target)
 
-    # Use the dynamic neighbors fallback function
+    # Find neighbors with TF-IDF scores
     try:
         distances, indices = find_neighbors_with_fallback(query, tfidf, vectorizer, max_neighbors=3)
     except ValueError as e:
         print(f"Error during neighbor search: {e}")
-        return None  # Or handle this case in a way that fits your application
+        return None  # Return None if an error occurs
 
-    n_samples, n_neighbors = distances.shape
-
+    # Expand results to align query taxa with their closest matches
     expanded_distances = distances.flatten()
-    expanded_query = np.repeat(query, n_neighbors)
+    expanded_query = np.repeat(query, distances.shape[1])
     expanded_target = np.array(target)[indices.flatten()]
 
     matches = np.column_stack((expanded_distances, expanded_query, expanded_target))
-    matches_ = matches[:, [1, 2, 0]]
 
-    relevant_features = ['levenshtein_distance', 'damerau_levenshtein_distance', 'ratio', 'q_ratio', 'token_sort_ratio', 
-                         'w_ratio', 'token_set_ratio', 'jaro_winkler_similarity', 'partial_ratio', 
-                         'hamming_distance', 'jaro_similarity']
+    # Convert matches to DataFrame
+    match_df = pd.DataFrame(matches, columns=['distance', 'query_name', 'target_name'])
 
-    features = tuple_engineer_features(matches_, relevant_features)
-    filtered_features = [feature for feature in features if float(feature['score']) < 0.30]
+    # Compute similarity features directly
+    match_df = match_df.merge(query_dataset[["gbif_taxonomy", "taxonRank"]], 
+                              left_on="query_name", right_on="gbif_taxonomy", how="left")\
+                       .merge(target_dataset[["ncbi_target_string", "ncbi_rank"]], 
+                              left_on="target_name", right_on="ncbi_target_string", how="left")
 
-    y_pred = model.predict_proba(extract_values_from_dict_list(filtered_features))[:, 1]
-    add_predictions_to_features(filtered_features, y_pred)
+    match_df = match_df[["query_name", "target_name", "distance", "taxonRank", "ncbi_rank"]]
 
-    best_match_indices = np.where(y_pred > threshold)[0]
-    best_matches = [filtered_features[i] for i in best_match_indices]
+    similarity_features = compute_similarity_metrics(match_df)
 
-    match = pd.DataFrame(best_matches).sort_values("score", ascending=True).drop_duplicates(["query_name"], keep="first")
+    # Predict match probabilities using the model
+    X_features = similarity_features[relevant_features]
+    y_pred = model.predict_proba(X_features)[:, 1]
+    match_df['prediction'] = y_pred
 
-    df2 = target_dataset.merge(match, left_on='ncbi_target_string', right_on='target_name', how='inner')
-    df3 = query_dataset.merge(df2, left_on='gbif_taxonomy', right_on='query_name', how='inner')[['taxonID', 'parentNameUsageID', 'canonicalName', 'ncbi_id', 'ncbi_canonicalName', 'prediction', 'score', 'taxonomicStatus', 'gbif_taxonomy', 'ncbi_target_string', 'ncbi_lineage_names', 'ncbi_lineage_ids']]
+    # Select best matches exceeding the threshold
+    #match_df = match_df[y_pred > threshold]
+    match_df = match_df.sort_values("prediction", ascending=False).drop_duplicates(["query_name"], keep="first")
 
+    df2 = target_dataset.merge(match_df, left_on='ncbi_target_string', right_on='target_name', how='inner', suffixes=("_target", "_match"))
+    # Select only the columns of match_df that have the _match suffix and remove the original ones.
+    df2 = df2.drop(columns=["ncbi_rank_target"]).rename(columns={"ncbi_rank_match": "ncbi_rank"})
+
+    df3 = query_dataset.merge(df2, left_on='gbif_taxonomy', right_on='query_name', how='inner', suffixes=("_target", "_match"))
+    df3 = df3.drop(columns=["taxonRank_target"]).rename(columns={"taxonRank_match": "taxonRank"})
+
+    # Merge with query dataset and retain necessary columns
+    df3 = df3[
+        ['taxonID', 'parentNameUsageID', 'canonicalName', 'ncbi_id', 'ncbi_canonicalName', 
+         'taxonRank', 'ncbi_rank', 'prediction', 'distance', 'taxonomicStatus', 
+         'gbif_taxonomy', 'ncbi_target_string', 'ncbi_lineage_names', 'ncbi_lineage_ids']
+    ]
+
+    # Identify unmatched taxa
     initial = set(query)
     matched = set(df3.gbif_taxonomy)
     discarded = list(initial.difference(matched))
 
-    df_matched = df3.copy()
-    ncbi_matching = list(set(df_matched.ncbi_id))
+    # Retrieve unmatched target taxa
+    ncbi_matching = list(set(df3.ncbi_id))
     ncbi_missing = target_dataset[~target_dataset.ncbi_id.isin(ncbi_matching)]
-    ncbi_missing_2 = ncbi_missing[['ncbi_id', 'ncbi_canonicalName', 'ncbi_target_string', 'ncbi_lineage_names', 'ncbi_lineage_ids']]
-    ncbi_missing_3 = target_dataset[target_dataset['ncbi_canonicalName'].str.contains(r'\d')]
-    new_df_matched = pd.concat([df_matched, ncbi_missing_2, ncbi_missing_3], ignore_index=True)
-    new_df_matched = new_df_matched.fillna(-1)
+    ncbi_missing_df = ncbi_missing[['ncbi_id', 'ncbi_canonicalName', 'ncbi_target_string', 'ncbi_lineage_names', 'ncbi_lineage_ids']]
     
+    # Restore taxa with numbers (previously removed)
+    ncbi_missing_restored = target_dataset[target_dataset['ncbi_canonicalName'].str.contains(r'\d')]
+
+    # Combine matched taxa with unmatched target taxa
+    new_df_matched = pd.concat([df3, ncbi_missing_df, ncbi_missing_restored], ignore_index=True).fillna(-1)
+
+    # Extract unmatched query taxa
     df_unmatched = query_dataset[query_dataset["gbif_taxonomy"].isin(discarded)]
-    return (new_df_matched, df_unmatched)
+
+    return new_df_matched, df_unmatched
+
+
 
 
 def match_dataset(query_dataset, target_dataset, model, tree_generation = False): 
@@ -244,7 +265,7 @@ def match_dataset(query_dataset, target_dataset, model, tree_generation = False)
     #ncbi_canonicalName, ncbi_id -> target_canonicalName, target_id, 
 
     
-    relevant_features=['levenshtein_distance', 'damerau_levenshtein_distance', 'ratio', 'q_ratio', 'token_sort_ratio', 'w_ratio', 'token_set_ratio', 'jaro_winkler_similarity', 'partial_ratio', 'hamming_distance', 'jaro_similarity']
+    relevant_features=['rank_similarity', 'levenshtein_distance', 'damerau_levenshtein_distance', 'ratio', 'q_ratio', 'token_sort_ratio', 'w_ratio', 'token_set_ratio', 'jaro_winkler_similarity', 'partial_ratio', 'hamming_distance', 'jaro_similarity']
     
     # Load GBIF dictionary
     gbif_synonyms_names, gbif_synonyms_ids, gbif_synonyms_ids_to_ids = load_gbif_dictionary()
@@ -252,7 +273,7 @@ def match_dataset(query_dataset, target_dataset, model, tree_generation = False)
     # Load NCBI dictionary
     ncbi_synonyms_names, ncbi_synonyms_ids = load_ncbi_dictionary()
     
-    df_matched, df_unmatched = find_matching(query_dataset, target_dataset, model, relevant_features, 0.90)
+    df_matched, df_unmatched = find_matching(query_dataset, target_dataset, model, relevant_features, 0.20)
     
     # Filter rows where canonicalName is identical to ncbi_canonicalName
     identical = df_matched.query("canonicalName == ncbi_canonicalName")
@@ -293,14 +314,14 @@ def match_dataset(query_dataset, target_dataset, model, tree_generation = False)
         doubtful = doubtful.dropna(subset=['canonicalName', 'ncbi_canonicalName'])
         # Calculate Levenshtein distance for non-identical pairs
         lev_dist = doubtful.apply(lambda row: Levenshtein.distance(row['canonicalName'], row['ncbi_canonicalName']), axis=1)
-        
+    
         # Create a copy of the filtered DataFrame for non-identical pairs
         similar_pairs = doubtful.copy()
         
         # Add the Levenshtein distance as a new column
         similar_pairs["levenshtein_distance"] = lev_dist
     
-        possible_typos_df = pd.DataFrame(similar_pairs).query("levenshtein_distance <= 3").sort_values('score')
+        possible_typos_df = pd.DataFrame(similar_pairs).query("levenshtein_distance <= 3").sort_values('distance')
         
         gbif_excluded = query_dataset[query_dataset.taxonID.isin(doubtful.taxonID)]
         ncbi_excluded = target_dataset[target_dataset.ncbi_id.isin(doubtful.ncbi_id)]
