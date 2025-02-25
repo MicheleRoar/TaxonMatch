@@ -827,14 +827,17 @@ def convert_tree_to_dataframe(tree, query_dataset, target_dataset, path, inat_da
     ncbi_synonyms_names, ncbi_synonyms_ids = load_ncbi_dictionary()
 
     final_dataset_ = final_dataset.copy()
+    
     final_dataset_['gbif_synonyms_names'] = final_dataset_['taxonID'].map(
-        lambda x: '; '.join(map(str, gbif_synonyms_ids.get(x, [])))
+        lambda x: '; '.join([name for name, _ in gbif_synonyms_ids_to_ids.get(x, [])])
     )
+
     final_dataset_['gbif_synonyms_ids'] = final_dataset_['taxonID'].map(
-        lambda x: '; '.join(map(str, gbif_synonyms_ids_to_ids.get(x, [])))
+        lambda x: '; '.join([str(syn_id) for _, syn_id in gbif_synonyms_ids_to_ids.get(x, [])])
     )
+
     final_dataset_['ncbi_synonyms_names'] = final_dataset_['ncbi_id'].map(
-        lambda x: '; '.join(map(str, ncbi_synonyms_ids.get(x, [])))
+        lambda x: '; '.join(ncbi_synonyms_ids.get(x, []))
     )
     final_dataset_['id'] = range(1, len(final_dataset_) + 1)  # Assign unique IDs
 
