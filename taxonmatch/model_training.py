@@ -45,6 +45,9 @@ def generate_positive_set(gbif_dataset, ncbi_dataset, n):
     pd.DataFrame: A DataFrame containing positive matches with taxonomy strings and a match flag.
     """
     
+    sys.stdout.write(f'\rGenerating positive set: 0.0%')
+    sys.stdout.flush()
+    
     # Merge datasets on canonical names to identify positive matches.
     matched_df = gbif_dataset[0].merge(ncbi_dataset[0], left_on='canonicalName', right_on='ncbi_canonicalName', how='inner')
     
@@ -60,11 +63,20 @@ def generate_positive_set(gbif_dataset, ncbi_dataset, n):
     # Selecting true pairs for classifier, excluding `doubles_list`
     positive_matches = matched_df[~matched_df["canonicalName"].isin(doubles_list)]
     positive_matches = positive_matches[["gbif_taxonomy", "ncbi_target_string", "taxonRank", "ncbi_rank"]]
-    
+
     # Sampling exact and not-exact matches.
     value = round((n/3) * 2)
     not_exact = positive_matches.query("ncbi_target_string != gbif_taxonomy & not gbif_taxonomy.str.contains('tracheophyta')").sample(value)
+    
+    progress = (value / n) * 100
+    sys.stdout.write(f'\rGenerating positive set: {progress:.1f}%')
+    sys.stdout.flush()
+
     exact = positive_matches.query("ncbi_target_string == gbif_taxonomy").sample(round(n/3))
+
+    progress = 100.0 
+    sys.stdout.write(f'\rGenerating positive set: {progress:.1f}%\n')
+    sys.stdout.flush()
     
     # Combining samples and marking them as matches.
     positive_matches = pd.concat([exact, not_exact], axis=0)
@@ -96,13 +108,17 @@ def generate_negative_set(gbif_dataset, ncbi_dataset, n):
     num_other_samples = round(n / 3)  # 1/3 diffreent hierarchies
 
     v = []
+    total_previous_iterations = 0
+
     for i, item_a in enumerate(random.sample(gbif_samples, num_species_samples)):
-        sys.stdout.write(f'\r Generating species matches {i+1}/{num_species_samples}')
+        progress = ((i + total_previous_iterations) / n) * 100
+        sys.stdout.write(f'\rGenerating negative set: {progress:.1f}%')
         sys.stdout.flush()
 
         best_match, similarity = find_most_similar_match(item_a, ncbi_samples)
         v.append((item_a, best_match))
 
+    total_previous_iterations += num_species_samples
     similarity_df = pd.DataFrame(v, columns=['gbif_sample', 'ncbi_sample'])
 
     temp_df = similarity_df.merge(
@@ -129,6 +145,11 @@ def generate_negative_set(gbif_dataset, ncbi_dataset, n):
     higher_gbif_samples = gbif_higher_taxa.sample(num_other_samples)
     higher_ncbi_samples = ncbi_higher_taxa.sample(num_other_samples)
 
+    
+    progress = (total_previous_iterations / n) * 100
+    sys.stdout.write(f'\rGenerating negative set: {progress:.1f}%')
+    sys.stdout.flush()
+
     higher_negative_matches = pd.DataFrame({
         "gbif_taxonomy": higher_gbif_samples.gbif_taxonomy.values,
         "ncbi_target_string": higher_ncbi_samples.ncbi_target_string.values,
@@ -139,6 +160,9 @@ def generate_negative_set(gbif_dataset, ncbi_dataset, n):
 
     # Combine all negative matches
     negative_set = pd.concat([false_matches, higher_negative_matches], axis=0).reset_index(drop=True)
+
+    sys.stdout.write(f'\rGenerating negative set: 100.0%\n')
+    sys.stdout.flush()
 
     return negative_set
 

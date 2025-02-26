@@ -20,6 +20,12 @@ def load_ncbi_dictionary():
         ncbi_synonyms_names, ncbi_synonyms_ids = pickle.load(file)
     return ncbi_synonyms_names, ncbi_synonyms_ids
 
+def save_model(model, name):
+    directory = resources.files('taxonmatch.files.models')
+    file_path = directory / (name  + '.pkl')
+    
+    with open(file_path, 'wb') as f:
+        pickle.dump(model, f)
 
 def save_gbif_dictionary(gbif_synonyms_names, gbif_synonyms_ids, gbif_synonyms_ids_to_ids):
     directory = resources.files('taxonmatch.files.dictionaries')

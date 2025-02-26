@@ -24,7 +24,7 @@ def get_gbif_synonyms(gbif_dataset):
     tuple: Three dictionaries (synonyms by name, synonyms by ID, synonyms ID → (name, ID)).
     """
     if not isinstance(gbif_dataset[1], pd.DataFrame):
-        raise ValueError("gbif_dataset deve essere un pandas DataFrame.")
+        raise ValueError("gbif_dataset has to be a pandas DataFrame.")
 
     # Filter only the synonyms.
     df_gbif_synonyms = gbif_dataset[1][gbif_dataset[1]['taxonomicStatus'] == 'synonym']
@@ -111,6 +111,7 @@ def get_ncbi_synonyms(names_path):
 
 
 def get_inconsistencies(gbif_dataset, ncbi_dataset):
+
     matched_df = gbif_dataset[0].merge(ncbi_dataset[0], left_on='canonicalName', right_on= 'ncbi_canonicalName', how='inner')
     double_cN = matched_df.groupby('canonicalName').filter(lambda x: len(set(x['kingdom'])) > 1)
     double_cN = double_cN[double_cN["taxonomicStatus"] == "accepted"]
@@ -120,7 +121,9 @@ def get_inconsistencies(gbif_dataset, ncbi_dataset):
     double_cN_filtered['distance'] = double_cN_filtered.apply(lambda x: levenshtein.distance(x["gbif_taxonomy"], x["ncbi_target_string"]), axis=1)
     false_matches = double_cN_filtered.query('distance > 40')
     false_matches.columns = ['canonicalName', 'gbif_id', 'ncbi_id', 'gbif_rank', 'ncbi_rank', 'gbif_taxonomy', 'ncbi_taxonomy', 'distance']
-    return false_matches
+    df_inconsistencies = false_matches[false_matches['canonicalName'].apply(lambda x: len(x.split()) == 2)]
+    
+    return df_inconsistencies.drop(columns=["distance"])
 
 
 def get_wordcloud(full_training_set):
