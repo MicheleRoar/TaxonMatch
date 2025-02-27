@@ -9,6 +9,8 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.neighbors import NearestNeighbors
 from .model_training import compute_similarity_metrics
 from .loader import load_gbif_dictionary, load_ncbi_dictionary
+from sklearn.metrics.pairwise import cosine_similarity
+from Levenshtein import distance
 
 def ngrams(string, n=4):
 
@@ -482,4 +484,75 @@ def find_closest_sample(target_dataset, query_dataset, n_neighbors=1, similarity
     })
 
     return matches_df
+
+
+def find_similar_taxa(query_dataset, column, gbif_dataset, threshold=3, top_n=1):
+    """
+    Finds the most similar taxonomic names based on Levenshtein distance,
+    using TF-IDF pre-filtering to reduce the number of comparisons.
+    
+    Steps:
+    1. Filters exact matches and excludes them from further processing.
+    2. Uses TF-IDF to select the best candidate matches.
+    3. Applies Levenshtein distance on the remaining candidates.
+    4. Merges exact matches and approximate matches into a single DataFrame.
+
+    :param query_dataset: DataFrame with the TAXON names to check.
+    :param column: The column in query_dataset containing the taxon names.
+    :param gbif_dataset: DataFrame with GBIF taxonomic names (columns 'canonicalName' and 'taxonID').
+    :param threshold: Maximum Levenshtein distance to consider a match.
+    :param top_n: Number of top candidates to consider before applying Levenshtein distance.
+    :return: DataFrame with unmatched TAXON names, the most similar GBIF name, and its ID.
+    """
+    gbif_names = gbif_dataset[["canonicalName", "taxonID"]].dropna().drop_duplicates()
+    taxon_names = query_dataset[column].dropna().values
+
+    # 1. Filter exact matches
+    perfect_matches = query_dataset[query_dataset[column].isin(gbif_names["canonicalName"])].copy()
+    perfect_matches = perfect_matches.merge(gbif_names, left_on=column, right_on="canonicalName", how="left")
+    perfect_matches["Distance"] = 0  # Exact match
+
+    # 2. Filter taxa to be compared using Levenshtein distance
+    taxa_to_match = query_dataset[~query_dataset[column].isin(gbif_names["canonicalName"])]
+
+    # 3. Create a TF-IDF model to find the most similar candidates
+    vectorizer = TfidfVectorizer(analyzer=txm.ngrams, ngram_range=(2, 4))
+    tfidf_matrix = vectorizer.fit_transform(gbif_names["canonicalName"].values)
+
+    results = []
+
+    for taxon in taxa_to_match[column].values:
+        taxon_tfidf = vectorizer.transform([taxon])
+        similarities = cosine_similarity(taxon_tfidf, tfidf_matrix).flatten()
+        top_candidates_idx = np.argsort(similarities)[-top_n:]  # Selects the top candidates
+
+        best_match = None
+        best_match_id = None
+        min_distance = threshold + 1
+
+        for idx in top_candidates_idx:
+            candidate = gbif_names.iloc[idx]["canonicalName"]
+            candidate_id = gbif_names.iloc[idx]["taxonID"]
+            lev_dist = distance(taxon, candidate)
+
+            if lev_dist < min_distance:
+                min_distance = lev_dist
+                best_match = candidate
+                best_match_id = candidate_id
+                if lev_dist == 0:
+                    break
+
+        results.append((taxon, best_match, best_match_id, min_distance if best_match else None))
+
+    # 4. Create a DataFrame with the matched results
+    df_approx_matches = pd.DataFrame(results, columns=[column, "Similar GBIF Name", "GBIF Taxon ID", "Distance"])
+
+    # 5. Merge exact matches and approximate matches into a final DataFrame
+    df_final = pd.concat([perfect_matches[[column, "canonicalName", "taxonID", "Distance"]]
+                          .rename(columns={"canonicalName": "Similar GBIF Name", "taxonID": "GBIF Taxon ID"}),
+                          df_approx_matches], ignore_index=True)
+
+    return df_final
+
+
 
