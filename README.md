@@ -1,75 +1,105 @@
-# TaxonMatch
+# 🌿 TaxonMatch: Integrating Taxonomic Data from GBIF, NCBI, iNaturalist, PaleoDB, IUCN and other sources
 
-TaxonMatch is a Python package designed for facilitating the analysis, comparison, and visualization of taxonomic data. It provides robust tools for downloading, processing, analyzing, matching taxonomic datasets, and utilities for generating taxonomic trees.
+## 📌 Introduction
+**TaxonMatch** is a Python framework designed to **integrate, clean, and analyze taxonomic data** from **GBIF**, **NCBI**, **iNaturalist**, **PaleoDB**, and **IUCN**. It enhances taxonomic consistency across biodiversity datasets, simplifies taxonomic name matching, and enables the generation of **phylogenetic trees** based on consolidated data.
 
-## Installation
+### 🔍 Main Features
+- 📥 **Download and clean taxonomic datasets** from GBIF, NCBI, iNaturalist, PaleoDB, and IUCN.
+- 🔗 **Taxonomic name matching** to identify synonyms and discrepancies.
+- 🌳 **Generate phylogenetic trees** from consolidated taxonomic data.
+- 🦴 **Analyze fossil taxa** and identify their closest living relatives.
+- 🌍 **Assign conservation status** to species using IUCN data.
 
-You can install TaxonMatch directly from GitHub using pip:
+---
 
+## ⚙ Installation & Setup
+
+### Prerequisites
+Ensure you have **Python 3.8+** installed along with the necessary dependencies:
+
+```bash
+pip install -r requirements.txt
+```
 ```bash
 pip install git+https://github.com/MicheleRoar/TaxonMatch.git
 ```
 
-## Features
+## 🚀 Usage & Workflow
 
-- **Data Downloading:** Automate the downloading of taxonomic data from various sources.
-- **Analysis Utilities:** Tools for processing and analyzing taxonomic data.
-- **Model Training:** Functions to train models on taxonomic data.
-- **Matching Algorithms:** Tools for matching and comparing different taxonomic datasets.
-- **Tree Utilities:** Create and manage taxonomic trees for visualization and analysis.
-
-## Structure
-
-The package is structured as follows:
-
+### 1️⃣ Download Taxonomic Datasets
 ```bash
-taxonmatch/
-│
-├── taxonmatch/
-│ ├── init.py
-│ ├── downloader.py
-│ ├── analysis_utils.py
-│ ├── model_training.py
-│ ├── matching.py
-│ ├── tree_utils.py
-│ └── ...
-│
-├── tests/
-│ ├── test_downloader.py
-│ ├── test_data_processing.py
-│ └── ...
-│
-├── setup.py
-├── README.md
-└── requirements.txt
+import taxonmatch as txm
+
+# Download GBIF and NCBI datasets
+gbif_dataset = txm.download_gbif_taxonomy()
+ncbi_dataset = txm.download_ncbi_taxonomy()
 ```
 
-## Usage
+### 2️⃣ Taxonomic Name Matching (GBIF vs NCBI)
+```bash
+# Select a specific clade (example: Apidae)
+gbif_apidae, ncbi_apidae = txm.select_taxonomic_clade("Apidae", gbif_dataset, ncbi_dataset)
 
-Import and use various components of the package as needed:
-
-```python
-from taxonmatch import downloader, analysis_utils, model_training
+# Perform taxonomic matching
+matched_df, unmatched_df, possible_typos_df = txm.match_dataset(gbif_apidae, ncbi_apidae)
 ```
 
-## Testing
-
-To run tests, navigate to the root directory of the project and execute:
-```python
-python -m unittest
+### 3️⃣ Generate a Phylogenetic Tree
+```bash
+tree = txm.generate_taxonomic_tree(matched_df, unmatched_df)
+txm.print_tree(tree, root_name="Apidae")
+txm.save_tree(tree, "taxon_tree.txt")
 ```
 
-## Contributing
+### 4️⃣ Add Conservation Status Using IUCN Data
+```bash
+df_with_iucn_status = txm.add_iucn_status_column(matched_df)
+df_with_iucn_status[df_with_iucn_status.iucnRedListCategory.isin(['ENDANGERED', 'CRITICALLY_ENDANGERED', 'VULNERABLE'])]
+```
 
-Contributions to TaxonMatch are welcome! Please refer to the CONTRIBUTING.md file for guidelines on how to contribute to this project.
+### 5️⃣ Identify Closest Living Relatives for Fossil Species
+```bash
+paleodb_dataset = txm.download_gbif_taxonomy(source="paleodb")
+a3cat = txm.download_ncbi_taxonomy(source="a3cat")
+
+query = "Arthropoda;Insecta;Hymenoptera;Formicidae;Formica;Formica seuberti"
+txm.find_top_n_similar(query, a3cat, n_neighbors=4)
+```
+
+## 📈 Visualization
+### Distribution of Conservation Status
+```bash
+import matplotlib.pyplot as plt
+
+conservation_counts = df_with_iucn_status['iucnRedListCategory'].value_counts()
+plt.figure(figsize=(10, 6))
+conservation_counts.plot(kind='bar', color="blue", edgecolor='black')
+plt.title('Distribution by Conservation Status')
+plt.ylabel('Number of Species')
+plt.xlabel('Category')
+plt.xticks(rotation=45)
+plt.grid(axis='y', linestyle='--', alpha=0.7)
+plt.show()
+```
 
 ## License
 
 This project is licensed under the MIT License.
 
-## Contact
+## 🤝 Contributing & Maintenance
 
-For any queries or feedback, please contact micheleleone@outlook.com
+If you want to contribute to **TaxonMatch**:
+
+- **Open an issue** to report bugs or suggest improvements.
+- **Create a pull request** with a clear description of your changes.
+- **Follow the coding guidelines** and ensure all modifications are tested.
+
+For questions or support, contact michele.leone@unil.ch.
+
+
+## License
+
+This project is licensed under the MIT License.
 
 
 

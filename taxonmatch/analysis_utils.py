@@ -1,11 +1,13 @@
 
-import pandas as pd
-import requests
-import pickle
 import os
-from textdistance import levenshtein
-from wordcloud import WordCloud
+import re
+import pickle
+import requests
+import unicodedata
+import pandas as pd
 import matplotlib.pyplot as plt
+from wordcloud import WordCloud
+from textdistance import levenshtein
 from taxonmatch.loader import save_gbif_dictionary, save_ncbi_dictionary
 
 
@@ -151,34 +153,53 @@ def get_wordcloud(full_training_set):
 
 
 
-def find_dataset_id_by_name(name):
-    # URL of the API for searching datasets in GBIF
+def find_dataset_ids_by_name(name):
     url = "https://api.gbif.org/v1/dataset"
+    params = {'q': name, 'limit': 10}
 
-    # Parameters for the simple text search
-    params = {
-        'q': name,  # Search by name
-        'limit': 10  # Limit of returned results
-    }
-
-    # Make the request to the GBIF API
     response = requests.get(url, params=params)
-
+    
     if response.status_code == 200:
         data = response.json()
         results = data.get('results', [])
-
+        
         if not results:
             print("No datasets found.")
-            return None
+            return []
 
-        # Print and return the ID of the first matching dataset
+        dataset_ids = []
         for dataset in results:
             print(f"Title: {dataset['title']}, ID: {dataset['key']}")
-            return dataset['key']
+            dataset_ids.append(dataset['key'])
+
+        #return dataset_ids
     else:
         print(f"Error during request: {response.status_code}")
-        return None
+        return []
+
+def find_species_information(species, dataset):
+    """
+    Searches for a species in the dataset based on either 'canonicalName' or 'ncbi_canonicalName',
+    depending on which column exists.
+
+    Args:
+        species (str): The species name to search for.
+        dataset (pd.DataFrame): The dataset containing taxonomic information.
+
+    Returns:
+        pd.DataFrame | str: A filtered DataFrame with matching species or "String not found" message.
+    """
+    # Determine which column exists in the dataset
+    possible_columns = ['canonicalName', 'ncbi_canonicalName']
+    available_columns = [col for col in possible_columns if col in dataset[0].columns]
+
+    if not available_columns:
+        return "Error: No valid name column found in dataset"
+
+    # Perform the filtering based on the existing column(s)
+    result = dataset[0][dataset[0][available_columns].eq(species).any(axis=1)]
+
+    return result if not result.empty else "String not found"
 
 
 def clean_taxon_names(df, column_name):
@@ -224,4 +245,68 @@ def clean_taxon_names(df, column_name):
     return df
 
 
-
+def plot_conservation_statuses(df_with_iucn_status):
+    
+    # Define conservation statuses in order of increasing threat level
+    conservation_status_order = [
+        'Critically Endangered', 'Endangered', 'Vulnerable', 'Near Threatened', 
+        'Data Deficient', 'Least Concern'
+    ]
+    
+    # Define colors for each category (red → green gradient)
+    status_colors = {
+        'Critically Endangered': '#e41a1c',  # Dark red
+        'Endangered': '#ff7f00',  # Orange
+        'Vulnerable': '#e6ab02',  # Yellow
+        'Near Threatened': '#377eb8',  # Blue
+        'Data Deficient': '#984ea3',  # Purple
+        'Least Concern': '#4daf4a'  # Green
+    }
+    
+    # Normalize category names: replace underscores, title-case names
+    df_with_iucn_status['iucnRedListCategory'] = df_with_iucn_status['iucnRedListCategory']\
+        .str.replace('_', ' ')\
+        .str.title()
+    
+    # Ensure all categories are correctly mapped
+    df_with_iucn_status['iucnRedListCategory'] = df_with_iucn_status['iucnRedListCategory'].map(
+        lambda x: x if x in conservation_status_order else None
+    )
+    
+    # Remove rows with categories not in our defined order
+    df_with_iucn_status = df_with_iucn_status.dropna(subset=['iucnRedListCategory'])
+    
+    # Count species per conservation status
+    conservation_counts = df_with_iucn_status['iucnRedListCategory'].value_counts()
+    
+    # Reindex to ensure all categories are included in the correct order
+    conservation_counts = conservation_counts.reindex(conservation_status_order, fill_value=0)
+    
+    # Generate the bar plot
+    plt.figure(figsize=(10, 6))
+    bars = plt.bar(conservation_counts.index, conservation_counts.values, 
+                   color=[status_colors[status] for status in conservation_counts.index], 
+                   edgecolor='black')
+    
+    # Adjust the y-axis limit to prevent the tallest bar from touching the top
+    plt.ylim(0, max(conservation_counts.values) * 1.15)  # Adds 15% extra space
+    
+    # Add value labels on top of each bar
+    for bar in bars:
+        yval = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width()/2, yval + (max(conservation_counts.values) * 0.02), 
+                 str(int(yval)), ha='center', fontsize=9, fontweight='bold')
+    
+    # Set title and labels
+    plt.title('Species Distribution by Conservation Status', fontsize=13, fontweight='bold')
+    plt.ylabel('Number of Species with Genome Available', fontsize=11)
+    plt.xlabel('Conservation Status', fontsize=11)
+    
+    # Improve x-axis readability
+    plt.xticks(rotation=45, ha='right', fontsize=9)
+    plt.yticks(fontsize=9)
+    plt.grid(axis='y', linestyle='--', alpha=0.7)
+    
+    # Show the plot
+    plt.tight_layout()
+    plt.show()

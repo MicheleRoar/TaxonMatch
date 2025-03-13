@@ -486,11 +486,11 @@ def find_closest_sample(target_dataset, query_dataset, n_neighbors=1, similarity
     return matches_df
 
 
-def find_similar_taxa(query_dataset, column, gbif_dataset, threshold=3, top_n=1):
+def find_gbif_similar_taxa(query_dataset, column, gbif_dataset, threshold=None, top_n=1):
     """
     Finds the most similar taxonomic names based on Levenshtein distance,
     using TF-IDF pre-filtering to reduce the number of comparisons.
-    
+
     Steps:
     1. Filters exact matches and excludes them from further processing.
     2. Uses TF-IDF to select the best candidate matches.
@@ -500,7 +500,7 @@ def find_similar_taxa(query_dataset, column, gbif_dataset, threshold=3, top_n=1)
     :param query_dataset: DataFrame with the TAXON names to check.
     :param column: The column in query_dataset containing the taxon names.
     :param gbif_dataset: DataFrame with GBIF taxonomic names (columns 'canonicalName' and 'taxonID').
-    :param threshold: Maximum Levenshtein distance to consider a match.
+    :param threshold: Maximum Levenshtein distance to consider a match. If None, no threshold is applied.
     :param top_n: Number of top candidates to consider before applying Levenshtein distance.
     :return: DataFrame with unmatched TAXON names, the most similar GBIF name, and its ID.
     """
@@ -516,7 +516,7 @@ def find_similar_taxa(query_dataset, column, gbif_dataset, threshold=3, top_n=1)
     taxa_to_match = query_dataset[~query_dataset[column].isin(gbif_names["canonicalName"])]
 
     # 3. Create a TF-IDF model to find the most similar candidates
-    vectorizer = TfidfVectorizer(analyzer=txm.ngrams, ngram_range=(2, 4))
+    vectorizer = TfidfVectorizer(analyzer=ngrams)
     tfidf_matrix = vectorizer.fit_transform(gbif_names["canonicalName"].values)
 
     results = []
@@ -528,19 +528,21 @@ def find_similar_taxa(query_dataset, column, gbif_dataset, threshold=3, top_n=1)
 
         best_match = None
         best_match_id = None
-        min_distance = threshold + 1
+        min_distance = float('inf')  # Nessun limite iniziale
 
         for idx in top_candidates_idx:
             candidate = gbif_names.iloc[idx]["canonicalName"]
             candidate_id = gbif_names.iloc[idx]["taxonID"]
             lev_dist = distance(taxon, candidate)
 
-            if lev_dist < min_distance:
-                min_distance = lev_dist
-                best_match = candidate
-                best_match_id = candidate_id
-                if lev_dist == 0:
-                    break
+            # Se threshold è specificato, usa la soglia, altrimenti accetta qualsiasi distanza minima
+            if threshold is None or lev_dist < threshold:
+                if lev_dist < min_distance:
+                    min_distance = lev_dist
+                    best_match = candidate
+                    best_match_id = candidate_id
+                    if lev_dist == 0:
+                        break
 
         results.append((taxon, best_match, best_match_id, min_distance if best_match else None))
 
@@ -552,7 +554,23 @@ def find_similar_taxa(query_dataset, column, gbif_dataset, threshold=3, top_n=1)
                           .rename(columns={"canonicalName": "Similar GBIF Name", "taxonID": "GBIF Taxon ID"}),
                           df_approx_matches], ignore_index=True)
 
-    return df_final
+    df_similar_taxa = df_final.drop_duplicates(subset=[column, 'Similar GBIF Name'], keep='first')
+
+    return df_similar_taxa
 
 
+def add_gbif_synonyms(df):
+    
+    df = df.copy()
+    
+    gbif_synonym_names, gbif_synonyms_ids, gbif_synonyms_tuples = load_gbif_dictionary()
 
+    df.loc[:, 'gbif_synonyms_names'] = df['GBIF Taxon ID'].map(
+        lambda x: '; '.join([name for name, _ in gbif_synonyms_tuples.get(x, [])])
+    )
+
+    df.loc[:, 'gbif_synonyms_ids'] = df['GBIF Taxon ID'].map(
+        lambda x: '; '.join([str(syn_id) for _, syn_id in gbif_synonyms_tuples.get(x, [])])
+    )
+    
+    return df

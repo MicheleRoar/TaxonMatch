@@ -154,33 +154,44 @@ def load_gbif_samples(gbif_path_file, source = None):
         # Define columns of interest
         columns_of_interest = ['taxonID', 'datasetID' ,'parentNameUsageID', 'acceptedNameUsageID', 'canonicalName', 'taxonRank', 'taxonomicStatus', 'kingdom', 'phylum', 'class', 'order', 'family', 'genus']
         gbif_full = pd.read_csv(gbif_path_file, sep="\t", usecols=columns_of_interest, on_bad_lines='skip', low_memory=False)
-    
-        if source:
-            gbif_full = gbif_full[gbif_full['datasetID'] == source]
 
         gbif_full['gbif_taxonomy'] = gbif_full.apply(create_gbif_taxonomy, axis=1)
 
-        # Filter the DataFrame
-        gbif_subset = gbif_full.query("taxonomicStatus == 'accepted' & taxonRank != 'unranked'").fillna('').drop_duplicates(subset=gbif_full.columns[1:], keep='first')
-    
+        if source:
+            gbif_full_ = gbif_full[gbif_full['datasetID'] == source]
+            list_of_synonyms = list(set(gbif_full_[gbif_full_.taxonomicStatus == "synonym"].acceptedNameUsageID.dropna()))
+            df_synonyms = gbif_full[gbif_full.taxonID.isin(list_of_synonyms)]
+            #gbif_full = gbif_full_.copy(deep=True)
+
+        if source:
+            # Filter the DataFrame
+            gbif_subset = gbif_full_.query("taxonomicStatus == 'accepted' & taxonRank != 'unranked'").fillna('').drop_duplicates(subset=gbif_full.columns[1:], keep='first')
+            gbif_subset = pd.concat([gbif_subset, df_synonyms], ignore_index=True)
+        else:
+            gbif_subset = gbif_full.query("taxonomicStatus == 'accepted' & taxonRank != 'unranked'").fillna('').drop_duplicates(subset=gbif_full.columns[1:], keep='first')
+
+
         gbif_subset_cleaned = clean_taxonomy_dataframe(gbif_subset)
 
         # Process the taxonomy data
         gbif_subset_cleaned['gbif_taxonomy'] = gbif_subset_cleaned['gbif_taxonomy'].str.replace(r'(\W)\1+', r'\1', regex=True)
-    
+
         # Remove trailing and leading semicolons
         gbif_subset_cleaned['gbif_taxonomy'] = gbif_subset_cleaned['gbif_taxonomy'].str.rstrip(';').str.lstrip(';')
-    
+
         # Remove rows with only semicolons
         gbif_subset_cleaned.loc[gbif_subset_cleaned['gbif_taxonomy'] == ';', 'gbif_taxonomy'] = ''
         gbif_subset_cleaned = gbif_subset_cleaned.drop_duplicates(subset="gbif_taxonomy")
-    
+
         # Handle missing parent IDs
         #gbif_subset['parentNameUsageID'] = gbif_subset['parentNameUsageID'].replace('', np.nan).fillna(-1).astype(int)
         gbif_subset_cleaned['parentNameUsageID'] = np.where(gbif_subset_cleaned['parentNameUsageID'] == '', -1, gbif_subset_cleaned['parentNameUsageID']).astype(int)
-    
-    
-        parents_dict = dict(zip(gbif_subset_cleaned['taxonID'], gbif_subset_cleaned['parentNameUsageID']))
+
+        if source:
+            parents_dict = dict(zip(gbif_full['taxonID'].fillna(-1).astype(int), gbif_full['parentNameUsageID'].fillna(-1).astype(int)))
+        else:   
+            parents_dict = dict(zip(gbif_subset_cleaned['taxonID'], gbif_subset_cleaned['parentNameUsageID']))
+            
         gbif_subset_cleaned['gbif_taxonomy_ids'] = gbif_subset_cleaned.apply(lambda x: find_all_parents(x['taxonID'], parents_dict), axis=1)
 
         # Remove rows where the number of elements in gbif_taxonomy and gbif_taxonomy_ids do not match
@@ -193,7 +204,10 @@ def load_gbif_samples(gbif_path_file, source = None):
         print("\rProcessing samples...")
         print("Done.")
     
-    return gbif_subset_cleaned, gbif_full
+    if source:
+        return gbif_subset_cleaned, gbif_full_
+    else:
+        return gbif_subset_cleaned, gbif_full
 
 
 def download_gbif_taxonomy(output_folder=None, source = None):

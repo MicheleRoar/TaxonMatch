@@ -597,6 +597,7 @@ def add_inat_taxonomy(tree, df_inat):
 
 
 def correct_inconsistent_subspecies(df):
+
     # Create a dictionary {taxonID -> species_name} for quick reference
     species_dict = df[df["taxonRank"] == "species"].set_index("taxonID")["canonicalName"].to_dict()
 
@@ -665,6 +666,7 @@ def correct_inconsistent_subspecies(df):
 
     # Update the original DataFrame with the corrections
     df.update(df_filtered_2)
+    df = df.infer_objects(copy=False) 
 
     return df
 
@@ -682,6 +684,10 @@ def fix_inconsistent_subspecies(df_matched, df_unmatched):
     """
     # Extract subspecies rows
     unmatched_array = df_unmatched[df_unmatched['taxonRank'].isin(["subspecies", "form", "variety"])].to_numpy()
+    
+    if unmatched_array.size == 0:
+        return df_matched, df_unmatched, {}
+
     columns = df_unmatched.columns
     gbif_taxonomy_idx = list(columns).index("gbif_taxonomy")
     gbif_taxonomy_ids_idx = list(columns).index("gbif_taxonomy_ids")
