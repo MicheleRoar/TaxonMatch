@@ -152,7 +152,7 @@ def load_gbif_samples(gbif_path_file, source = None):
     try:
         
         # Define columns of interest
-        columns_of_interest = ['taxonID', 'datasetID' ,'parentNameUsageID', 'acceptedNameUsageID', 'canonicalName', 'taxonRank', 'taxonomicStatus', 'kingdom', 'phylum', 'class', 'order', 'family', 'genus']
+        columns_of_interest = ['taxonID', 'datasetID' ,'parentNameUsageID', 'acceptedNameUsageID', 'canonicalName', 'taxonRank', 'scientificNameAuthorship', 'taxonomicStatus', 'kingdom', 'phylum', 'class', 'order', 'family', 'genus']
         gbif_full = pd.read_csv(gbif_path_file, sep="\t", usecols=columns_of_interest, on_bad_lines='skip', low_memory=False)
 
         gbif_full['gbif_taxonomy'] = gbif_full.apply(create_gbif_taxonomy, axis=1)

@@ -486,77 +486,155 @@ def find_closest_sample(target_dataset, query_dataset, n_neighbors=1, similarity
     return matches_df
 
 
-def find_gbif_similar_taxa(query_dataset, column, gbif_dataset, threshold=None, top_n=1):
-    """
-    Finds the most similar taxonomic names based on Levenshtein distance,
-    using TF-IDF pre-filtering to reduce the number of comparisons.
 
-    Steps:
-    1. Filters exact matches and excludes them from further processing.
-    2. Uses TF-IDF to select the best candidate matches.
-    3. Applies Levenshtein distance on the remaining candidates.
-    4. Merges exact matches and approximate matches into a single DataFrame.
 
-    :param query_dataset: DataFrame with the TAXON names to check.
-    :param column: The column in query_dataset containing the taxon names.
-    :param gbif_dataset: DataFrame with GBIF taxonomic names (columns 'canonicalName' and 'taxonID').
-    :param threshold: Maximum Levenshtein distance to consider a match. If None, no threshold is applied.
-    :param top_n: Number of top candidates to consider before applying Levenshtein distance.
-    :return: DataFrame with unmatched TAXON names, the most similar GBIF name, and its ID.
-    """
-    gbif_names = gbif_dataset[["canonicalName", "taxonID"]].dropna().drop_duplicates()
-    taxon_names = query_dataset[column].dropna().values
 
-    # 1. Filter exact matches
-    perfect_matches = query_dataset[query_dataset[column].isin(gbif_names["canonicalName"])].copy()
-    perfect_matches = perfect_matches.merge(gbif_names, left_on=column, right_on="canonicalName", how="left")
-    perfect_matches["Distance"] = 0  # Exact match
 
-    # 2. Filter taxa to be compared using Levenshtein distance
-    taxa_to_match = query_dataset[~query_dataset[column].isin(gbif_names["canonicalName"])]
 
-    # 3. Create a TF-IDF model to find the most similar candidates
-    vectorizer = TfidfVectorizer(analyzer=ngrams)
-    tfidf_matrix = vectorizer.fit_transform(gbif_names["canonicalName"].values)
+# Step 1: Exact matches + best authorship selection
+def get_exact_matches(query_dataset, target_dataset, column):
+    target_names = target_dataset[["canonicalName", "taxonID", "scientificNameAuthorship", "taxonomicStatus"]].drop_duplicates().fillna("Not Available")
+    exact_matches = query_dataset[query_dataset[column].isin(target_names["canonicalName"])].copy()
+    exact_matches = exact_matches.merge(target_names, left_on=column, right_on="canonicalName", how="left")
+    exact_matches["Distance"] = 0
 
+    grouped = exact_matches.groupby(column, group_keys=False)
+    exact_matches_clean = []
+
+    for group_key, group_df in grouped:
+        group_df = group_df.drop(columns=[column])
+        group_df[column] = group_key
+        best_row = select_best_authorship(group_df)
+        exact_matches_clean.append(best_row)
+
+    return pd.concat(exact_matches_clean, ignore_index=True)
+
+# Step 1b: Best authorship match
+def select_best_authorship(df):
+    df = df.copy()
+    if "L." in df["scientificNameAuthorship"].values:
+        return df[df["scientificNameAuthorship"] == "L."].head(1)
+    else:
+        if "AuthorshipMatchScore" not in df.columns:
+            return df.head(1)
+        return df.sort_values(by=["AuthorshipMatchScore", "Distance"], ascending=[False, True]).head(1)
+
+# Step 2: Get top TF-IDF candidates
+def get_top_candidates(taxon, target_names, tfidf_matrix, vectorizer, top_n):
+    taxon_tfidf = vectorizer.transform([taxon])
+    similarities = cosine_similarity(taxon_tfidf, tfidf_matrix).flatten()
+    top_candidates_idx = np.argsort(similarities)[-top_n:][::-1]
+    return target_names.iloc[top_candidates_idx].copy()
+
+# Step 3: Score candidates including authorship distance
+def score_candidates(taxon, candidates, reference_authorship):
+    taxon_parts = taxon.split()
+    taxon_word_count = len(taxon_parts)
+    taxon_first_word = taxon_parts[0]
+
+    candidates["NameDistance"] = candidates["canonicalName"].apply(lambda x: -distance(taxon, x))
+    candidates["AuthorshipMatchScore"] = candidates["scientificNameAuthorship"].apply(
+        lambda x: -distance(x, reference_authorship)
+    )
+
+    candidates = candidates[
+        candidates["canonicalName"].apply(lambda x: distance(x.split(" ")[0], taxon_first_word) <= 3)
+    ].copy()
+
+    candidates["WordCount"] = candidates["canonicalName"].apply(lambda x: len(x.split(" ")))
+    candidates["AdjustedNameDistance"] = candidates.apply(
+        lambda row: row["NameDistance"] - abs(row["WordCount"] - taxon_word_count) * 2,
+        axis=1
+    )
+
+    if taxon_word_count == 3:
+        taxon_infraspecific = taxon_parts[2]
+
+        def penalize_infraspecific(row):
+            parts = row["canonicalName"].split()
+            if len(parts) == 3:
+                dist = distance(parts[2], taxon_infraspecific)
+                return row["AdjustedNameDistance"] - dist * 2
+            return row["AdjustedNameDistance"] - 5
+
+        candidates["AdjustedNameDistance"] = candidates.apply(penalize_infraspecific, axis=1)
+
+    return candidates.sort_values(by=["AdjustedNameDistance"], ascending=False)
+
+# Step 4: Return top match
+def find_best_match(taxon, candidates):
+    best_match = candidates.head(1)
+    return (
+        taxon,
+        best_match["canonicalName"].iloc[0],
+        best_match["taxonID"].iloc[0],
+        best_match["NameDistance"].iloc[0],
+        best_match["scientificNameAuthorship"].iloc[0],
+        best_match["AuthorshipMatchScore"].iloc[0]
+    )
+
+# Main pipeline
+
+def find_gbif_similar_taxa(query_dataset, target_dataset, column, top_n=3):
+    # Setup
+    max_name_penalty = 30  # maximum distance considered for 0% match
+    target_names = target_dataset[["canonicalName", "taxonID", "scientificNameAuthorship", "taxonomicStatus"]].drop_duplicates().fillna("Not Available")
+    vectorizer = TfidfVectorizer(analyzer=ngrams, lowercase=True)
+    tfidf_matrix = vectorizer.fit_transform(target_names["canonicalName"])
+
+    # Step 1: exact matches
+    exact_matches = get_exact_matches(query_dataset, target_dataset, column)
+    exact_matches = exact_matches.rename(columns={
+        "canonicalName": "gbif_canonicalName",
+        "taxonID": "gbif_taxonID",
+        "scientificNameAuthorship": "gbif_scientificNameAuthorship"
+    })
+    exact_matches["MatchScore"] = 100.0  # exact match is always 100%
+
+    # Step 2: approximate matches
+    taxa_to_match = query_dataset[~query_dataset[column].isin(target_names["canonicalName"])].copy()
     results = []
 
-    for taxon in taxa_to_match[column].values:
-        taxon_tfidf = vectorizer.transform([taxon])
-        similarities = cosine_similarity(taxon_tfidf, tfidf_matrix).flatten()
-        top_candidates_idx = np.argsort(similarities)[-top_n:]  # Selects the top candidates
+    reference_col = column.replace("_cleaned", "")
+    for _, row in taxa_to_match.iterrows():
+        taxon = row[column]
+        reference_authorship = row[reference_col] if reference_col in row and pd.notna(row[reference_col]) else ""
+        candidates = get_top_candidates(taxon, target_names, tfidf_matrix, vectorizer, top_n)
+        scored_candidates = score_candidates(taxon, candidates, reference_authorship)
+        if not scored_candidates.empty:
+            results.append(find_best_match(taxon, scored_candidates))
 
-        best_match = None
-        best_match_id = None
-        min_distance = float('inf')  # Nessun limite iniziale
+    df_approx_matches = pd.DataFrame(results, columns=[
+        column,
+        "gbif_canonicalName",
+        "gbif_taxonID",
+        "Distance",
+        "gbif_scientificNameAuthorship",
+        "AuthorshipMatchScore"
+    ])
 
-        for idx in top_candidates_idx:
-            candidate = gbif_names.iloc[idx]["canonicalName"]
-            candidate_id = gbif_names.iloc[idx]["taxonID"]
-            lev_dist = distance(taxon, candidate)
+    df_approx_final = df_approx_matches.merge(query_dataset, on=column, how="left")
+    df_approx_final["MatchScore"] = 100 * (1 - abs(df_approx_final["Distance"]) / max_name_penalty)
+    df_approx_final["MatchScore"] = df_approx_final["MatchScore"].clip(lower=0, upper=100).astype(int)
 
-            # Se threshold è specificato, usa la soglia, altrimenti accetta qualsiasi distanza minima
-            if threshold is None or lev_dist < threshold:
-                if lev_dist < min_distance:
-                    min_distance = lev_dist
-                    best_match = candidate
-                    best_match_id = candidate_id
-                    if lev_dist == 0:
-                        break
+    # Align both DataFrames
+    common_cols = [
+        'Family', 'TAXON', 'Threat Category', 'Criteria', 'Threats',
+        'TAXON_cleaned', 'gbif_canonicalName', 'gbif_taxonID',
+        'gbif_scientificNameAuthorship', 'MatchScore'
+    ]
 
-        results.append((taxon, best_match, best_match_id, min_distance if best_match else None))
+    for col in common_cols:
+        if col not in exact_matches.columns:
+            exact_matches[col] = None
+        if col not in df_approx_final.columns:
+            df_approx_final[col] = None
 
-    # 4. Create a DataFrame with the matched results
-    df_approx_matches = pd.DataFrame(results, columns=[column, "Similar GBIF Name", "GBIF Taxon ID", "Distance"])
+    exact_matches = exact_matches[common_cols]
+    df_approx_final = df_approx_final[common_cols]
+    final_df = pd.concat([exact_matches, df_approx_final], ignore_index=True)
 
-    # 5. Merge exact matches and approximate matches into a final DataFrame
-    df_final = pd.concat([perfect_matches[[column, "canonicalName", "taxonID", "Distance"]]
-                          .rename(columns={"canonicalName": "Similar GBIF Name", "taxonID": "GBIF Taxon ID"}),
-                          df_approx_matches], ignore_index=True)
-
-    df_similar_taxa = df_final.drop_duplicates(subset=[column, 'Similar GBIF Name'], keep='first')
-
-    return df_similar_taxa
+    return final_df
 
 
 def add_gbif_synonyms(df):
@@ -565,11 +643,11 @@ def add_gbif_synonyms(df):
     
     gbif_synonym_names, gbif_synonyms_ids, gbif_synonyms_tuples = load_gbif_dictionary()
 
-    df.loc[:, 'gbif_synonyms_names'] = df['GBIF Taxon ID'].map(
+    df.loc[:, 'gbif_synonyms_names'] = df['gbif_taxonID'].map(
         lambda x: '; '.join([name for name, _ in gbif_synonyms_tuples.get(x, [])])
     )
 
-    df.loc[:, 'gbif_synonyms_ids'] = df['GBIF Taxon ID'].map(
+    df.loc[:, 'gbif_synonyms_ids'] = df['gbif_taxonID'].map(
         lambda x: '; '.join([str(syn_id) for _, syn_id in gbif_synonyms_tuples.get(x, [])])
     )
     
