@@ -33,9 +33,6 @@ fiona==1.9.6
 folium==0.16.0
 fonttools==4.47.2
 fsspec==2024.3.1
-geographiclib==2.0
-geopandas==0.14.3
-geopy==2.4.1
 idna==3.4
 jedi==0.19.1
 jellyfish==1.0.3
@@ -64,7 +61,7 @@ networkx==3.1
 numpy==1.26.3
 overrides==7.6.0
 packaging==23.2
-pandas==2.2.0
+pandas==2.2.2
 pandocfilters==1.5.1
 parso==0.8.3
 pexpect==4.9.0
@@ -110,7 +107,6 @@ terminado==0.18.0
 textdistance==4.6.1
 threadpoolctl==3.2.0
 tinycss2==1.2.1
-tokenizers==0.15.2
 tornado==6.4.2
 tqdm==4.66.1
 traitlets==5.14.1
