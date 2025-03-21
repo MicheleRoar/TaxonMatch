@@ -1,23 +1,57 @@
 from setuptools import setup, find_packages
-from pip._internal.req import parse_requirements
-
-
-requirements = parse_requirements('requirements.txt', session='hack')
-required = [str(req.requirement) for req in requirements]
 
 setup(
     name='TaxonMatch',
     version='0.1.0',
     author='Michele Leone',
     author_email='micheleleone@outlook.com',
-    description='',
+    description='A tool for taxonomic name resolution using NCBI and GBIF and many other biological sources',
     long_description=open('README.md').read(),
     long_description_content_type='text/markdown',
     url='https://github.com/MicheleRoar/TaxonMatch',
     packages=find_packages(),
     include_package_data=True,
     package_data={
-    'taxonmatch': ['files/dictionaries/*.pkl', 'files/models/*.pkl'],
+        'taxonmatch': ['files/dictionaries/*.pkl', 'files/models/*.pkl'],
     },
-    install_requires=required,  
+    install_requires=[
+        "anytree>=2.12.1",
+        "ete3>=3.1.3",
+        "Levenshtein>=0.24.0",
+        "rapidfuzz>=3.6.1",
+        "textdistance>=4.6.1",
+        "pandas>=2.2.0",
+        "numpy>=1.26",
+        "requests>=2.31",
+        "pyinaturalist>=0.19.0",
+        "scikit-learn>=1.4.0",
+        "jsonschema>=4.21.1",
+        "cattrs>=23.2.3",
+        "arrow>=1.3.0",
+        "async-lru>=2.0.4",
+        "pyrate-limiter>=2.10.0",
+        "requests-cache>=1.2.0",
+        "requests-ratelimiter>=0.6.0",
+        "rich>=13.7.1",
+        "typing_extensions>=4.12.0",
+        "filelock>=3.15",
+        "joblib>=1.3.2",
+        "matplotlib>=3.8.0",
+        "networkx>=3.2",
+        "pyarrow>=18.0.0",
+        "pyparsing>=3.1.1",
+        "pillow>=10.2.0",
+        "scipy>=1.12.0",
+        "threadpoolctl>=3.2.0",
+        "tqdm>=4.66.1",
+        "PyYAML>=6.0.1",
+        "packaging>=23.2",
+        "attrs>=23.2.0",
+        "charset-normalizer>=2.0.4",
+        "Babel>=2.14.0",
+        "click>=8.1.7",
+        "wordcloud>=1.9.3",
+        "xgboost>=2.0.3",
+        "urllib3>=2.1.0"
+    ]
 )
