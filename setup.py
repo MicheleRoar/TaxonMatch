@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='TaxonMatch',
-    version='0.1.0',
+    version='2.0.0',
     author='Michele Leone',
     author_email='micheleleone@outlook.com',
     description='A tool for taxonomic name resolution using NCBI and GBIF and many other biological sources',
@@ -36,6 +36,7 @@ setup(
         "typing_extensions>=4.12.0",
         "filelock>=3.15",
         "joblib>=1.3.2",
+        "jellyfish==1.0.3",
         "matplotlib>=3.8.0",
         "networkx>=3.2",
         "pyarrow>=18.0.0",
