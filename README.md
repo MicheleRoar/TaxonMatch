@@ -14,14 +14,37 @@
 
 ## ⚙ Installation & Setup
 
-### Prerequisites
-Ensure you have **Python 3.8+** installed along with the necessary dependencies:
+### 🐍 Create a clean Conda environment (recommended)
 
 ```bash
-pip install -r requirements.txt
+conda create -n taxonmatch-env python=3.10 -y
+conda activate taxonmatch-env
+
 ```
+
+### 📦 Install TaxonMatch
+
 ```bash
+#Install the latest version directly from GitHub:
 pip install git+https://github.com/MicheleRoar/TaxonMatch.git
+```
+
+### 📓 (Optional) Run example notebooks
+```bash
+#Install Jupyter and optional plotting libraries:
+pip install notebook ipython ipywidgets
+jupyter notebook
+```
+
+### ⚠️ macOS + XGBoost fix (Apple Silicon only)
+```bash
+#If you're on macOS with M1/M2/M3 and XGBoost fails to load due to libomp.dylib
+arch -arm64 brew install libomp
+export DYLD_LIBRARY_PATH=/opt/homebrew/lib:$DYLD_LIBRARY_PATH
+#To make this permanent, add to your shell config (~/.zshrc or ~/.bash_profile):
+export DYLD_LIBRARY_PATH=/opt/homebrew/lib:$DYLD_LIBRARY_PATH
+#Then run:
+source ~/.zshrc  # or source ~/.bash_profile
 ```
 
 ## 🚀 Usage & Workflow

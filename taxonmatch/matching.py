@@ -369,127 +369,21 @@ def match_dataset(query_dataset, target_dataset, model, tree_generation = False)
     return matched_df, unmatched_df, possible_typos_df
 
 
+def add_gbif_synonyms(df):
+    
+    df = df.copy()
+    
+    gbif_synonym_names, gbif_synonyms_ids, gbif_synonyms_tuples = load_gbif_dictionary()
 
-def find_top_n_similar(input_string, target_dataset, n_neighbors=3):
-    """
-    Finds the top N similar strings in the target dataset for a given input string using TF-IDF vectorization and nearest neighbors.
+    df.loc[:, 'gbif_synonyms_names'] = df['gbif_taxonID'].map(
+        lambda x: '; '.join([name for name, _ in gbif_synonyms_tuples.get(x, [])])
+    )
 
-    Args:
-    input_string (str): The input string to match against the target dataset.
-    target_dataset (DataFrame): Dataset containing the target entries with 'ncbi_canonicalName' column.
-    n_neighbors (int): Number of nearest neighbors to find. Defaults to 3.
-
-    Returns:
-    DataFrame: A DataFrame containing the matched targets and the distances.
-    """
-
-    # Filter entries that contain digits in canonical names
-    target_dataset_filtered = target_dataset[~target_dataset['ncbi_canonicalName'].str.contains(r'\d')]
-    target = list(set(target_dataset_filtered.ncbi_canonicalName))
-
-    # Set up the TF-IDF vectorizer
-    vectorizer = TfidfVectorizer(analyzer=ngrams, lowercase=True)
-    tfidf = vectorizer.fit_transform(target)
-
-    # Configure the NearestNeighbors model
-    nbrs = NearestNeighbors(n_neighbors=n_neighbors, algorithm='auto', n_jobs=-1, metric='cosine')
-    nbrs.fit(tfidf)
-
-    # Compute the nearest neighbors for the input string
-    distances, indices = nbrs.kneighbors(vectorizer.transform([input_string]))
-    distances = np.round(distances[0], 2)
-    indices = indices[0]
-
-    # Prepare lists for the final DataFrame
-    matched_targets = [target[idx] for idx in indices]
-    matched_ids = [target_dataset_filtered[target_dataset_filtered['ncbi_canonicalName'] == target[idx]]['ncbi_id'].values[0] for idx in indices]
-    matched_distances = distances
-
-    # Organize and format the results
-    matches_df = pd.DataFrame({
-        'Query': [input_string] * len(matched_targets),
-        'ncbi_id': matched_ids,
-        'Matched Target': matched_targets,
-        'Distance': matched_distances
-    })
-
-    return matches_df
-
-
-
-def find_closest_sample(target_dataset, query_dataset, n_neighbors=1, similarity_threshold=0.70, max_levenshtein_distance=2):
-    """
-    Finds the nearest neighbor in the target dataset for each string in the query dataset using TF-IDF vectorization and nearest neighbors,
-    with an option to filter based on a similarity threshold and the Levenshtein distance of the first word after splitting by the last semicolon.
-
-    Args:
-    target_dataset (DataFrame): Dataset containing the target entries with 'ncbi_canonicalName' and 'ncbi_id' columns.
-    query_dataset (DataFrame): Dataset containing the query entries with 'gbif_taxonomy' column.
-    n_neighbors (int): Number of nearest neighbors to find. Defaults to 1.
-    similarity_threshold (float): Threshold for similarity. Entries with distances above this threshold are discarded. Defaults to 0.70.
-    max_levenshtein_distance (int): Maximum allowed Levenshtein distance for the first word comparison. Defaults to 3.
-
-    Returns:
-    DataFrame: A DataFrame containing the queries, their matched targets, their IDs, and the distances.
-    """
-
-    # Filter entries that contain digits in canonical names
-    target_dataset_filtered = target_dataset[~target_dataset['ncbi_canonicalName'].str.contains(r'\d')]
-    target = list(target_dataset_filtered.ncbi_canonicalName)
-    target_ids = list(target_dataset_filtered.ncbi_id)
-    query = list(query_dataset.gbif_taxonomy)
-
-    # Set up the TF-IDF vectorizer
-    vectorizer = TfidfVectorizer(analyzer=ngrams, lowercase=True)
-    tfidf = vectorizer.fit_transform(target)
-
-    # Configure the NearestNeighbors model
-    nbrs = NearestNeighbors(n_neighbors=n_neighbors, algorithm='auto', n_jobs=-1, metric='cosine')
-    nbrs.fit(tfidf)
-
-    # Compute the nearest neighbors for the query strings
-    distances, indices = nbrs.kneighbors(vectorizer.transform(query))
-    distances = np.round(distances, 2)
-
-    # Prepare lists for the final DataFrame
-    filtered_queries = []
-    filtered_targets = []
-    filtered_ids = []
-    filtered_distances = []
-
-    for i, (dist_list, idx_list) in enumerate(zip(distances, indices)):
-        if dist_list[0] <= similarity_threshold:
-            query_string = query[i]
-            target_string = target[idx_list[0]]
-
-            # Extract the last part after the last semicolon in query and target
-            query_last_part = query_string.split(';')[-1].split()[0].lower()
-            target_last_part = target_string.split(';')[-1].split()[0].lower()
-
-            # Calculate the Levenshtein distance between the first words
-            lev_distance = Levenshtein.distance(query_last_part, target_last_part)
-            
-            if lev_distance <= max_levenshtein_distance:
-                filtered_queries.append(query_string)
-                filtered_targets.append(target_string)
-                filtered_ids.append(target_ids[idx_list[0]])
-                filtered_distances.append(dist_list[0])
-
-    # Organize and format the results
-    matches_df = pd.DataFrame({
-        'Query': filtered_queries,
-        'Matched_id': filtered_ids,
-        'Matched Target': filtered_targets,
-        'Distance': filtered_distances
-    })
-
-    return matches_df
-
-
-
-
-
-
+    df.loc[:, 'gbif_synonyms_ids'] = df['gbif_taxonID'].map(
+        lambda x: '; '.join([str(syn_id) for _, syn_id in gbif_synonyms_tuples.get(x, [])])
+    )
+    
+    return df
 
 # Step 1: Exact matches + best authorship selection
 def get_exact_matches(query_dataset, target_dataset, column):
@@ -634,21 +528,4 @@ def find_gbif_similar_taxa(query_dataset, target_dataset, column, top_n=3):
     df_approx_final = df_approx_final[common_cols]
     final_df = pd.concat([exact_matches, df_approx_final], ignore_index=True)
 
-    return final_df
-
-
-def add_gbif_synonyms(df):
-    
-    df = df.copy()
-    
-    gbif_synonym_names, gbif_synonyms_ids, gbif_synonyms_tuples = load_gbif_dictionary()
-
-    df.loc[:, 'gbif_synonyms_names'] = df['gbif_taxonID'].map(
-        lambda x: '; '.join([name for name, _ in gbif_synonyms_tuples.get(x, [])])
-    )
-
-    df.loc[:, 'gbif_synonyms_ids'] = df['gbif_taxonID'].map(
-        lambda x: '; '.join([str(syn_id) for _, syn_id in gbif_synonyms_tuples.get(x, [])])
-    )
-    
-    return df
+    return add_gbif_synonyms(final_df)
