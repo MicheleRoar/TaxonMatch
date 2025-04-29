@@ -1,9 +1,9 @@
 import re
-import ete3
 import json
 import pickle
-import pandas as pd
 import numpy as np
+import pandas as pd
+from ete3 import Tree
 from anytree import Node, RenderTree
 from anytree.exporter import JsonExporter
 from taxonmatch.loader import load_gbif_dictionary, load_ncbi_dictionary
@@ -262,37 +262,24 @@ def export_tree(tree, ncbi_dataset, gbif_dataset, path):
     print(f"Tree data has been exported to {path}.")
 
 
-def tree_to_dataframe(tree, inat_dataset=None):
+def tree_to_dataframe_updated(tree, inat_dataset=None):
     """
-    Converts a tree structure into a list of dictionaries, each representing a node within the tree 
-    with its index and taxonomic IDs, including NCBI, GBIF, and iNaturalist information.
-
-    Args:
-    tree (Tree): The tree structure to be converted. The tree is assumed to be of a type that has a 
-                 .traverse() method (like in Bio.Phylo or ete3).
-    inat_dataset (DataFrame, optional): A dataset containing iNaturalist taxon information. Defaults to None.
-
-    Returns:
-    list: A list of dictionaries, where each dictionary contains the index, NCBI ID, GBIF Taxon ID, 
-          and optionally iNaturalist ID.
+    Converts a tree structure into a DataFrame including all available IDs and canonical names.
     """
     data = []
-
-    # Traverse the tree and collect data from each node
     for node in tree.traverse():
-        node_data = {
-            "Index": node.name,  # Node's name used as an index
-            "ncbi_id": getattr(node, "ncbi_id", None),  # Collect NCBI ID if available
-            "gbif_taxon_id": getattr(node, "gbif_taxon_id", None),  # Collect GBIF Taxon ID if available
+        row = {
+            "Index": node.name,
+            "ncbi_id": getattr(node, "ncbi_id", None),
+            "gbif_taxon_id": getattr(node, "gbif_taxon_id", None),
+            "ncbi_canonical_name": getattr(node, "ncbi_canonical_name", None),
+            "gbif_canonical_name": getattr(node, "gbif_canonical_name", None),
+            "inat_taxon_id": getattr(node, "inat_taxon_id", None),
         }
-        
-        # Add iNaturalist ID if the dataset is provided
-        if inat_dataset is not None:
-            node_data["inat_taxon_id"] = getattr(node, "inat_taxon_id", None)  # iNaturalist Taxon ID
-        
-        data.append(node_data)
+        data.append(row)
 
-    return data
+    df = pd.DataFrame(data).replace({None: pd.NA})
+    return df  
 
 def clean_synonyms(synonyms):
     if pd.isna(synonyms):
@@ -332,7 +319,7 @@ def manage_duplicated_branches(matched_df, unmatched_df):
     
     # Function to replace only complete taxa names between semicolons
     def fast_replace(text):
-        if not isinstance(text, str):  # Evita errori su NaN
+        if not isinstance(text, str): 
             return text
         return pattern.sub(lambda m: m.group(1) + replace_dict[m.group(0).lower().lstrip(";")], text)
     
@@ -345,7 +332,6 @@ def manage_duplicated_branches(matched_df, unmatched_df):
 
 
 
-# Funzione completa aggiornata
 def update_subspecies_based_on_synonyms(df_matched, df_unmatched):
     """
     Updates the taxonomy of subspecies based on synonym resolution for their parent species.
@@ -472,127 +458,174 @@ def update_subspecies_based_on_synonyms(df_matched, df_unmatched):
     return df_matched, df_unmatched
 
 
-
 def generate_taxonomic_tree(df_matched, df_unmatched):
     """
     Generates a phylogenetic tree from matched and unmatched DataFrame inputs, integrating taxonomic IDs and names.
 
     Args:
-    df_matched (DataFrame): Contains matched taxonomic data including NCBI lineage names and IDs.
-    df_unmatched (DataFrame): Contains unmatched GBIF taxonomic data needing corrections.
+        df_matched (DataFrame): Contains matched taxonomic data including NCBI lineage names and IDs.
+        df_unmatched (DataFrame): Contains unmatched GBIF taxonomic data needing corrections.
 
     Returns:
-    tree (ete3.Tree): A tree object populated with taxonomic nodes and IDs from both NCBI and GBIF sources.
-
-    This function processes matched and unmatched dataframes to create a comprehensive taxonomic tree. 
-    It handles discrepancies in naming through a management function and constructs a tree using names and IDs.
+        tuple: tree, node_dict, taxon_id_dict, ncbi_name_to_node, gbif_name_to_node
     """
- 
     # Process dataframes to manage duplicated branches and resolve naming discrepancies
     df_matched_processed, df_unmatched_processed = manage_duplicated_branches(df_matched, df_unmatched)
-
-    #Fix issues related to subspecies name inconsistency
     df_matched_fixed, df_unmatched_fixed, substitution_dict = fix_inconsistent_subspecies(df_matched_processed, df_unmatched_processed)
 
-    # Initialize the phylogenetic tree
-    tree = ete3.Tree()
-
-    # Dictionaries to track nodes by taxon name and identifiers by taxon ID
+    tree = Tree()
     node_dict = {}
     taxon_id_dict = {}
+    ncbi_name_to_node = {}
+    gbif_name_to_node = {}
 
-    # Insert information from processed matched dataframe
+    # NCBI section
     for row in df_matched_fixed.itertuples(index=False):
-        ncbi_lineage_names = row.ncbi_lineage_names.lower().split(';')
-        ncbi_lineage_ids = row.ncbi_lineage_ids.split(';')
+        lineage_names = row.ncbi_lineage_names.lower().split(';')
+        lineage_ids = row.ncbi_lineage_ids.split(';')
+        canonical_name = row.ncbi_canonicalName.lower()
         ncbi_taxon_id = row.taxonID
 
         parent_node = tree
-        for i, taxon in enumerate(ncbi_lineage_names):
-            ncbi_id = ncbi_lineage_ids[i]
-            existing_child = node_dict.get(taxon)
-            if not existing_child:
-                new_node = parent_node.add_child(name=taxon)
-                node_dict[taxon] = new_node
+        for i, name in enumerate(lineage_names):
+            tax_id = lineage_ids[i]
+            existing_node = node_dict.get(name)
+            if not existing_node:
+                new_node = parent_node.add_child(name=name)
+                node_dict[name] = new_node
                 parent_node = new_node
             else:
-                parent_node = existing_child
+                parent_node = existing_node
 
-            parent_node.add_feature('ncbi_taxon_id', ncbi_taxon_id)
-            parent_node.add_feature('ncbi_id', ncbi_id)
-            taxon_id_dict[ncbi_taxon_id] = ncbi_id
+            parent_node.add_feature("ncbi_id", tax_id)
+            parent_node.add_feature("ncbi_taxon_id", ncbi_taxon_id)
+            parent_node.add_feature("ncbi_canonical_name", name)
+            taxon_id_dict[ncbi_taxon_id] = parent_node
+            ncbi_name_to_node[name] = parent_node
 
-            # Add GBIF ID as the taxonID for leaves
-            if i == len(ncbi_lineage_names) - 1:
-                parent_node.add_feature('gbif_taxon_id', ncbi_taxon_id)
+            if i == len(lineage_names) - 1:
+                parent_node.add_feature("gbif_taxon_id", ncbi_taxon_id)  # May be overridden later
 
-    # Insert information from processed unmatched dataframe
+    # GBIF section
     for row in df_unmatched_fixed.itertuples(index=False):
-        gbif_taxonomy = row.gbif_taxonomy.split(';')
-        gbif_taxonomy_ids = row.gbif_taxonomy_ids.split(';')
+        if pd.isna(row.gbif_taxonomy) or pd.isna(row.gbif_taxonomy_ids):
+            continue
+        lineage_names = row.gbif_taxonomy.lower().split(';')
+        lineage_ids = row.gbif_taxonomy_ids.split(';')
+        canonical_name = row.canonicalName.lower()
+        gbif_taxon_id = row.taxonID
 
-        # Ensure the number of elements is the same
-        if len(gbif_taxonomy) != len(gbif_taxonomy_ids):
+        if len(lineage_names) != len(lineage_ids):
             continue
 
         parent_node = tree
-        for i, taxon in enumerate(gbif_taxonomy):
-            gbif_id = gbif_taxonomy_ids[i]
-            existing_child = node_dict.get(taxon)
-            if not existing_child:
-                new_node = parent_node.add_child(name=taxon)
-                node_dict[taxon] = new_node
-                parent_node = new_node
+        for i, name in enumerate(lineage_names):
+            tax_id = lineage_ids[i]
+            if name in ncbi_name_to_node:
+                node = ncbi_name_to_node[name]
+                parent_node = node
             else:
-                parent_node = existing_child
+                existing_node = node_dict.get(name)
+                if not existing_node:
+                    new_node = parent_node.add_child(name=name)
+                    node_dict[name] = new_node
+                    parent_node = new_node
+                else:
+                    parent_node = existing_node
 
-            parent_node.add_feature('gbif_taxon_id', gbif_id)
+            parent_node.add_feature("gbif_taxon_id", tax_id)
+            parent_node.add_feature("gbif_canonical_name", name)
+            
+            gbif_name_to_node[name] = parent_node
+            taxon_id_dict[gbif_taxon_id] = parent_node
 
-    return tree, node_dict, taxon_id_dict
+    return tree, node_dict, taxon_id_dict, ncbi_name_to_node, gbif_name_to_node
 
 
 
-def add_inat_taxonomy(tree, df_inat):
+def add_inat_taxonomy(tree_tuple, df_inat):
     """
-    Adds nodes to the existing tree based on the taxonomy in inat_taxonomy.
+    Adds iNaturalist taxonomy to the existing tree, avoiding duplication of IDs or canonical names,
+    and preserving separation between GBIF, NCBI, and iNaturalist nodes.
 
     Args:
-        tree (tuple): A tuple containing:
-            tree[0]: The tree structure (ete3.Tree)
-            tree[1]: Dictionary of nodes by name (node_dict)
-            tree[2]: Dictionary of nodes by taxonomic ID (taxon_id_dict)
-        df_inat (DataFrame): A DataFrame with a column 'inat_taxonomy' containing iNaturalist taxonomy.
-    
+        tree_tuple (tuple): Contains the current state of the taxonomy tree and mappings:
+            - tree: root node of the taxonomy tree
+            - node_dict: dictionary mapping canonical names to nodes
+            - gbif_taxon_id_dict: GBIF taxon ID to node mapping
+            - ncbi_name_to_node: NCBI canonical name to node mapping
+            - gbif_name_to_node: GBIF canonical name to node mapping
+
+        df_inat (pd.DataFrame): iNaturalist taxonomy data. Required columns:
+            - 'inat_taxonomy_ids' (semicolon-separated string of taxon IDs)
+            - 'inat_lineage_names' (semicolon-separated string of taxon names)
+            - 'inat_taxon_id' (int)
+            - 'inat_canonical_name' (str)
+            - 'inat_taxonRank' (str)
+
     Returns:
-    tuple: Updates tree directly with new nodes and dictionaries.
+        tuple: Updated (tree, node_dict, gbif_taxon_id_dict, ncbi_name_to_node, gbif_name_to_node, inat_taxon_id_dict)
     """
-    # Extract elements from tuples
-    phylo_tree, node_dict, taxon_id_dict = tree
+    tree, node_dict, gbif_taxon_id_dict, ncbi_name_to_node, gbif_name_to_node = tree_tuple
+    inat_taxon_id_dict = {}
+    inat_name_to_node = {}
 
-    # Iterate over each row of the DataFrame.
     for row in df_inat.itertuples(index=False):
-        inat_taxonomy = row.inat_taxonomy.split(';')  # Splitta la tassonomia
-        inat_taxon_id = row.inat_taxon_id  # ID del taxon inat
+        # Skip incomplete rows
+        if pd.isna(row.inat_taxonomy_ids) or pd.isna(row.inat_lineage_names):
+            continue
 
-        # Start from the root node.
-        parent_node = phylo_tree
-        for taxon in inat_taxonomy:
-            # Check if the node already exists.
-            if taxon not in node_dict:
-                # Create a new node and add it to the tree
-                new_node = parent_node.add_child(name=taxon)
-                node_dict[taxon] = new_node  # Aggiornare il dizionario dei nodi
-                parent_node = new_node  # Aggiornare il nodo genitore
+        lineage_ids = [int(x) for x in str(row.inat_taxonomy_ids).split(';') if x.isdigit()]
+        lineage_names = [x.strip().lower() for x in str(row.inat_lineage_names).split(';') if x.strip()]
+        if len(lineage_ids) != len(lineage_names):
+            continue  # Malformed lineage, skip
+
+        inat_taxon_id = row.inat_taxon_id
+        inat_canonical = str(row.inat_canonical_name).strip().lower() if pd.notna(row.inat_canonical_name) else None
+        inat_rank = str(row.inat_taxonRank).strip() if pd.notna(row.inat_taxonRank) else None
+
+        # Skip if taxon already exists
+        if inat_taxon_id in inat_taxon_id_dict:
+            continue
+
+        parent_node = tree
+
+        for i, (tax_id, name) in enumerate(zip(lineage_ids, lineage_names)):
+            is_leaf = (i == len(lineage_ids) - 1)
+
+            if tax_id in inat_taxon_id_dict:
+                node = inat_taxon_id_dict[tax_id]
+            elif name in ncbi_name_to_node:
+                node = ncbi_name_to_node[name]
+            elif name in gbif_name_to_node:
+                node = gbif_name_to_node[name]
+            elif name in inat_name_to_node:
+                node = inat_name_to_node[name]
+            elif name in node_dict:
+                existing_node = node_dict[name]
+                if hasattr(existing_node, 'inat_taxon_id') and existing_node.inat_taxon_id == tax_id:
+                    node = existing_node
+                else:
+                    node = parent_node.add_child(name=name)
+                    node_dict[name] = node
             else:
-                # Move to the existing node
-                parent_node = node_dict[taxon]
+                node = parent_node.add_child(name=name)
+                node_dict[name] = node
 
-        # At the end of the taxonomy, assign the taxon ID to the leaf node
-        parent_node.add_feature('inat_taxon_id', inat_taxon_id)
-        taxon_id_dict[inat_taxon_id] = parent_node  # Aggiornare il dizionario ID-taxon
+            if not hasattr(node, 'inat_taxon_id'):
+                node.add_feature('inat_taxon_id', tax_id)
+            if not hasattr(node, 'inat_canonical_name'):
+                node.add_feature('inat_canonical_name', name)
+            if inat_rank and not hasattr(node, 'inat_taxonRank'):
+                node.add_feature('inat_taxonRank', inat_rank)
+            if not hasattr(node, 'source_inat'):
+                node.add_feature('source_inat', True)
 
-    # Return the updated tuple
-    return phylo_tree, node_dict, taxon_id_dict
+            inat_taxon_id_dict[tax_id] = node
+            inat_name_to_node[name] = node
+            parent_node = node
+
+    return tree, node_dict, gbif_taxon_id_dict, ncbi_name_to_node, gbif_name_to_node, inat_taxon_id_dict
 
 
 
@@ -665,8 +698,11 @@ def correct_inconsistent_subspecies(df):
     df_filtered_2 = replace_species_name_vectorized(inconsistent_rows)
 
     # Update the original DataFrame with the corrections
-    df.update(df_filtered_2)
-    df = df.infer_objects(copy=False) 
+    #df.update(df_filtered_2)
+    #df = df.infer_objects(copy=False) 
+
+    for col in df_filtered_2.columns:
+        df.loc[df_filtered_2.index, col] = df_filtered_2[col]
 
     return df
 
@@ -752,54 +788,51 @@ def fix_inconsistent_subspecies(df_matched, df_unmatched):
     return df_matched, df_unmatched_corrected, filtered_dict
 
 
+def capitalize_first_word(s):
+    if pd.isna(s):
+        return s
+    parts = s.split()
+    if parts:
+        parts[0] = parts[0].capitalize()
+    return ' '.join(parts)
+
 
 def convert_tree_to_dataframe(tree, query_dataset, target_dataset, path, inat_dataset=None, index=False):
     """
-    Converts a taxonomic tree into a pandas DataFrame, merges it with external datasets (NCBI, GBIF, iNaturalist),
-    enriches it with synonyms, and saves the final DataFrame to a specified CSV file.
+    Converts a taxonomic tree into a pandas DataFrame, merges it with external datasets (NCBI, GBIF, and optionally iNaturalist),
+    enriches it with synonym information, applies capitalization, standardizes column names, 
+    and saves the final DataFrame to the specified CSV file.
 
     Args:
-    tree (object): The taxonomic tree to be converted.
-    query_dataset (DataFrame): GBIF dataset containing taxonomic information.
-    target_dataset (DataFrame): NCBI dataset containing taxonomic information.
-    path (str): File path where the resulting CSV will be saved.
-    inat_dataset (DataFrame, optional): iNaturalist dataset containing taxonomic information. Defaults to None.
-    index (bool, optional): Whether to index the tree before conversion. Defaults to False.
+        tree (list): List containing the root of the taxonomic tree.
+        query_dataset (DataFrame): The GBIF dataset.
+        target_dataset (DataFrame): The NCBI dataset.
+        path (str): Path where the final CSV will be saved.
+        inat_dataset (DataFrame, optional): The iNaturalist dataset. Defaults to None.
+        index (bool, optional): Whether to index nodes with hierarchical paths. Defaults to False.
 
     Returns:
-    DataFrame: The cleaned, enriched DataFrame containing information from NCBI, GBIF, and iNaturalist.
+        DataFrame: The final merged and cleaned DataFrame.
     """
     # Step 1: Copy and optionally index the tree
     indexed_tree = tree[0].copy()
     if index:
         indexed_tree = index_tree(tree[0], include_name=True)
 
-    # Step 2: Convert the tree to a DataFrame
-    indexed_tree_data = tree_to_dataframe(indexed_tree, inat_dataset)
+    # Step 2: Convert tree to DataFrame
+    indexed_tree_data = tree_to_dataframe_updated(indexed_tree, inat_dataset)
     df_indexed_tree = pd.DataFrame(indexed_tree_data).tail(-1)  # Exclude the root node
 
-    # Step 3: Clean and cast IDs for NCBI, GBIF, and iNaturalist
-    df_indexed_tree['ncbi_id'] = df_indexed_tree['ncbi_id'].fillna(-1).astype(int)
-    df_indexed_tree['gbif_taxon_id'] = df_indexed_tree['gbif_taxon_id'].fillna(-1).astype(int)
-    
-    if inat_dataset is not None:
-        if 'inat_taxon_id' in df_indexed_tree.columns:
-            df_indexed_tree['inat_taxon_id'] = df_indexed_tree['inat_taxon_id'].fillna(-1).astype(int)
+    # Step 3: Clean and cast IDs
+    df_indexed_tree['ncbi_id'] = pd.to_numeric(df_indexed_tree['ncbi_id'], errors='coerce').fillna(-1).astype(int)
+    df_indexed_tree['gbif_taxon_id'] = pd.to_numeric(df_indexed_tree['gbif_taxon_id'], errors='coerce').fillna(-1).astype(int)
+    if inat_dataset is not None and 'inat_taxon_id' in df_indexed_tree.columns:
+        df_indexed_tree['inat_taxon_id'] = pd.to_numeric(df_indexed_tree['inat_taxon_id'], errors='coerce').fillna(-1).astype(int)
 
-    '''
-    # Remove rows where all IDs (NCBI, GBIF, iNaturalist) are -1
-    df_indexed_tree = df_indexed_tree[
-        ~((df_indexed_tree['ncbi_id'] == -1) &
-          (df_indexed_tree['gbif_taxon_id'] == -1) &
-          (df_indexed_tree['inat_taxon_id'] == -1)
-         )
-    ]
-    '''
-    
-    # Step 4: Merge with GBIF and NCBI datasets
     target_dataset['ncbi_id'] = target_dataset['ncbi_id'].astype(int)
     query_dataset['taxonID'] = query_dataset['taxonID'].astype(int)
 
+    # Step 4: Merge tree DataFrame with GBIF data
     merged_gbif = pd.merge(
         df_indexed_tree,
         query_dataset[['taxonID', 'canonicalName', 'gbif_taxonomy']],
@@ -807,100 +840,102 @@ def convert_tree_to_dataframe(tree, query_dataset, target_dataset, path, inat_da
         right_on='taxonID',
         how='left'
     )
+    merged_gbif['gbif_canonical_name'] = merged_gbif['canonicalName'].str.lower()
+
+    # Step 5: Merge with NCBI data
     merged_ncbi = pd.merge(
         merged_gbif,
         target_dataset[['ncbi_id', 'ncbi_canonicalName', 'ncbi_target_string']],
-        left_on='ncbi_id',
-        right_on='ncbi_id',
+        on='ncbi_id',
         how='left'
     )
 
-    # Step 5: Merge with iNaturalist dataset if provided
+    # Step 6: Merge with iNaturalist data if provided
     if inat_dataset is not None:
         merged_inat = pd.merge(
             merged_ncbi,
             inat_dataset[['inat_taxon_id', 'inat_canonical_name', 'inat_taxonomy']],
-            left_on='inat_taxon_id',
-            right_on='inat_taxon_id',
+            on='inat_taxon_id',
             how='left'
         )
         final_dataset = merged_inat
     else:
         final_dataset = merged_ncbi
 
-    # Step 6: Add synonym columns
+    # Step 7: Add synonym columns
     gbif_synonyms_names, gbif_synonyms_ids, gbif_synonyms_ids_to_ids = load_gbif_dictionary()
     ncbi_synonyms_names, ncbi_synonyms_ids = load_ncbi_dictionary()
 
     final_dataset_ = final_dataset.copy()
-    
+
     final_dataset_['gbif_synonyms_names'] = final_dataset_['taxonID'].map(
-        lambda x: '; '.join([name for name, _ in gbif_synonyms_ids_to_ids.get(x, [])])
+        lambda x: '; '.join([name for name, _ in gbif_synonyms_ids_to_ids.get(x, [])]) if x in gbif_synonyms_ids_to_ids else None
     )
 
     final_dataset_['gbif_synonyms_ids'] = final_dataset_['taxonID'].map(
-        lambda x: '; '.join([str(syn_id) for _, syn_id in gbif_synonyms_ids_to_ids.get(x, [])])
+        lambda x: '; '.join([str(syn_id) for _, syn_id in gbif_synonyms_ids_to_ids.get(x, [])]) if x in gbif_synonyms_ids_to_ids else None
     )
 
     final_dataset_['ncbi_synonyms_names'] = final_dataset_['ncbi_id'].map(
-        lambda x: '; '.join(ncbi_synonyms_ids.get(x, []))
+        lambda x: '; '.join(ncbi_synonyms_ids.get(x, [])) if x in ncbi_synonyms_ids else None
     )
-    final_dataset_['id'] = range(1, len(final_dataset_) + 1)  # Assign unique IDs
 
-    # Step 7: Replace invalid values and clean the DataFrame
+    final_dataset_['id'] = range(1, len(final_dataset_) + 1)
+
+    # Step 8: Fill missing values consistently
     final_dataset_ = final_dataset_.apply(lambda col: col.fillna(-1) if col.dtypes != 'object' else col.fillna("-1"))
     final_dataset_ = final_dataset_.replace([-1, '-1', ""], None)
-
-    # Ensure the 'Index' column is converted to string
     final_dataset_['Index'] = final_dataset_['Index'].fillna('').astype(str)
 
-    # Step 8: Dynamically select and rename columns
-    selected_columns = ["id", "ncbi_id", "gbif_taxon_id", "ncbi_canonicalName", "canonicalName", "gbif_synonyms_names", "gbif_synonyms_ids", "ncbi_synonyms_names"]
-    
-    # Add columns dynamically based on conditions
+    # Step 9: Capitalize the first word of canonical names
+    prefixes = ["ncbi", "gbif"]
     if inat_dataset is not None:
-        selected_columns.extend(["inat_taxon_id", "inat_canonical_name"])
-    
-    if index:
-        final_dataset_[['hierarchical_path', 'node_name']] = final_dataset_['Index'].str.extract(r'^([\d\.]+)\s*(.*)$', expand=True)
-        selected_columns.extend(["hierarchical_path", "node_name"])
-    
-    # Rename the columns dynamically
-    renamed_columns = {
-        "id": "id",
+        prefixes.append("inat")
+
+    for prefix in prefixes:
+        taxon_id_col = f"{prefix}_taxon_id"
+        canon_col = f"{prefix}_canonical_name"
+
+        mask = final_dataset_[taxon_id_col].notna() & final_dataset_[canon_col].isna()
+        final_dataset_.loc[mask, canon_col] = final_dataset_.loc[mask, "node_name"].apply(capitalize_first_word)
+
+        final_dataset_[canon_col] = final_dataset_[canon_col].apply(capitalize_first_word)
+
+    # Step 10: Standardize column names
+    final_dataset_.rename(columns={
         "hierarchical_path": "path",
-        #"node_name": "node_name",
-        "ncbi_id": "ncbi_taxon_id",
-        "gbif_taxon_id": "gbif_taxon_id",
-        "inat_taxon_id": "inat_taxon_id",
-        "ncbi_canonicalName": "ncbi_canonical_name",
-        "canonicalName": "gbif_canonical_name",
-        "inat_canonical_name": "inat_canonical_name",
-        "gbif_synonyms_ids": "gbif_synonyms_ids",
-        "gbif_synonyms_names": "gbif_synonyms_names",
-        "ncbi_synonyms_names": "ncbi_synonyms_names",
+        "inat_taxon_id": "inaturalist_taxon_id",
+        "inat_canonical_name": "inaturalist_canonical_name"
+    }, inplace=True)
 
-    }
-    
-    # Filter only existing columns to avoid KeyError
-    existing_columns = [col for col in renamed_columns.keys() if col in final_dataset_.columns]
-    final_dataset = final_dataset_[existing_columns]
-    
-    # Rename columns
-    final_dataset_ = final_dataset.copy()
-    final_dataset.rename(columns=renamed_columns, inplace=True)
+    # Step 11: Select final columns dynamically
+    final_columns = [
+        "id",
+        "path",
+        "ncbi_taxon_id",
+        "gbif_taxon_id",
+        "ncbi_canonical_name",
+        "gbif_canonical_name",
+        "gbif_synonyms_ids",
+        "gbif_synonyms_names",
+        "ncbi_synonyms_names"
+    ]
 
-    # Step 9: Clean synonyms and handle missing values
-    final_results_cleaned = final_dataset.copy()
-    final_results_cleaned['ncbi_synonyms_names'] = final_results_cleaned['ncbi_synonyms_names'].apply(clean_synonyms)
-    
     if inat_dataset is not None:
-        final_results_cleaned['inat_taxon_id'] = final_results_cleaned['inat_taxon_id'].astype('Int64')
+        final_columns.insert(4, "inaturalist_taxon_id")
+        final_columns.insert(7, "inaturalist_canonical_name")
 
-    # Save the final DataFrame to CSV
-    final_results_cleaned.to_csv(path, index=False)
+    final_dataset = final_dataset_[final_columns]
 
-    return final_results_cleaned
+    # Step 12: Clean up synonyms
+    final_dataset['ncbi_synonyms_names'] = final_dataset['ncbi_synonyms_names'].apply(clean_synonyms)
+    if inat_dataset is not None:
+        final_dataset['inaturalist_taxon_id'] = final_dataset['inaturalist_taxon_id'].astype('Int64')
+
+    # Step 13: Save final dataset
+    final_dataset.to_csv(path, index=False)
+
+    return final_dataset
 
 
 

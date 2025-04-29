@@ -4,6 +4,7 @@ import re
 import pickle
 import requests
 import unicodedata
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from wordcloud import WordCloud
@@ -317,3 +318,98 @@ def plot_conservation_statuses(df_with_iucn_status):
     # Show the plot
     plt.tight_layout()
     plt.show()
+
+
+
+def fast_check_taxon_consistency(df):
+    problems = {}
+
+    print("⚡ Starting generic taxonomic consistency check\n")
+
+    # Dynamically detect relevant columns
+    id_cols = [col for col in df.columns if col.endswith('_taxon_id')]
+    name_cols = [col for col in df.columns if col.endswith('_canonical_name')]
+
+    print(f"🔹 ID columns: {id_cols}")
+    print(f"🔹 Canonical name columns: {name_cols}\n")
+
+    # 🔸 1. Check for duplicate IDs within each column
+    for col in id_cols:
+        values = pd.to_numeric(df[col], errors='coerce').dropna().values
+        unique, counts = np.unique(values, return_counts=True)
+        dup_ids = unique[counts > 1].tolist()
+        if dup_ids:
+            print(f"❌ Duplicates found in {col}: {dup_ids}")
+            problems[f'duplicated_{col}'] = dup_ids
+        else:
+            print(f"✅ No duplicates found in {col}")
+
+    print("\n---")
+
+    # 🔸 2. Check for duplicate canonical names within each column
+    for col in name_cols:
+        values = df[col].dropna().astype(str).values
+        unique, counts = np.unique(values, return_counts=True)
+        dup_names = unique[counts > 1].tolist()
+        if dup_names:
+            print(f"❌ Duplicates found in canonical names column {col}: {dup_names}")
+            problems[f'duplicated_{col}'] = dup_names
+        else:
+            print(f"✅ No duplicates found in canonical names column {col}")
+
+    print("\n---")
+
+    # 🔸 3. Cross-column canonical name conflicts across different rows
+    print("🔎 Checking for cross-column canonical name overlaps across different rows...\n")
+    seen = {}
+    cross_conflicts = set()
+
+    for idx, row in df[name_cols].iterrows():
+        for val in row.dropna().astype(str).values:
+            if val in seen and seen[val] != idx:
+                print(f"⚠️ Name '{val}' appears in multiple rows ({seen[val]} and {idx}) across different columns")
+                cross_conflicts.add(val)
+            else:
+                seen[val] = idx
+
+    if cross_conflicts:
+        problems['canonical_name_overlap_across_columns_different_rows'] = list(cross_conflicts)
+    else:
+        print("✅ No overlapping canonical names across different rows")
+
+    print("\n---")
+
+    # 🔸 4. Rows missing all canonical names (inat is optional)
+    required_sources = ['ncbi', 'gbif']
+    optional_sources = ['inat']
+    all_name_cols = [f"{src}_canonical_name" for src in required_sources]
+    if 'inaturalist_canonical_name' in df.columns:
+        all_name_cols.append('inaturalist_canonical_name')
+
+    condition = df[all_name_cols].isna().all(axis=1)
+    missing_all_canonicals = df[condition]
+
+    if not missing_all_canonicals.empty:
+        print(f"❌ Rows missing all canonical names: {len(missing_all_canonicals)}")
+        problems['missing_all_canonical_names'] = missing_all_canonicals.index.tolist()
+        display(missing_all_canonicals)
+    else:
+        print("✅ All rows have at least one canonical name")
+
+    print("\n---")
+
+    # 🔸 5. Taxon ID present but canonical name missing (inat optional)
+    for source in ['gbif', 'ncbi', 'inaturalist']:
+        id_col = f"{source}_taxon_id"
+        name_col = f"{source}_canonical_name"
+        if id_col in df.columns and name_col in df.columns:
+            missing_name = df[df[id_col].notna() & df[name_col].isna()]
+            if not missing_name.empty:
+                print(f"❌ Rows with {id_col} present but missing {name_col}: {len(missing_name)}")
+                problems[f'{source}_id_without_name'] = missing_name.index.tolist()
+                display(missing_name)
+            else:
+                print(f"✅ All rows with {id_col} have a corresponding {name_col}")
+
+    print("\n✅ Consistency check completed.\n")
+    return problems

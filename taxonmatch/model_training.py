@@ -320,7 +320,7 @@ def compare_models(X_train, X_test, y_train, y_test):
         "AdaBoostClassifier": AdaBoostClassifier(algorithm='SAMME'),
         "Perceptron": Perceptron(),
         "SVC": SVC(),
-        "MLPClassifier": MLPClassifier(),
+        "MLPClassifier": MLPClassifier(max_iter=500),
         "RandomForestClassifier": RandomForestClassifier(),
         "GradientBoostingClassifier": GradientBoostingClassifier(),
         "XGBClassifier": XGBClassifier(),
@@ -430,7 +430,7 @@ def find_most_similar_match(query, strings):
     strings (list of str): A list of strings to compare against the query.
 
     Returns:
-    tuple: A tuple containing the best match and its similarity score.
+    tuple: (str, float) - the best matching string and its similarity score.
     """
 
     # Find the string with the highest similarity to the query string, below 85%.

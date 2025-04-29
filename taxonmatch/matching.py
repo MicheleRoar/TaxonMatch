@@ -143,7 +143,6 @@ def find_neighbors_with_fallback(query, tfidf, vectorizer, max_neighbors=3):
             return distances, indices
         except ValueError as e:
             # If it fails, reduce the number of neighbors and try again
-            #print(f"Error with n_neighbors={n_neighbors}: {e}")
             n_neighbors -= 1
 
     # If it's not possible to find neighbors, raise an exception
@@ -250,123 +249,143 @@ def find_matching(query_dataset, target_dataset, model, relevant_features, thres
 
 
 
-def match_dataset(query_dataset, target_dataset, model, tree_generation = False): 
+def match_dataset(query_dataset, target_dataset, model, tree_generation=False):
     """
-    Filters the matched dataset to identify and separate synonyms.
-    
+    Match taxonomic entries between a query dataset (e.g., GBIF) and a target dataset (e.g., NCBI),
+    identifying exact matches, synonyms (cross-dictionary), and possible typos.
+
     Args:
-    [Your existing parameters]
-    
+        query_dataset (pd.DataFrame): The input dataset containing taxonomic names and IDs.
+        target_dataset (pd.DataFrame): The reference dataset (e.g., NCBI taxonomy).
+        model: A pre-trained model used to calculate similarity features.
+        tree_generation (bool): Whether to include ambiguous matches for tree reconstruction.
+
     Returns:
-    tuple: DataFrames of filtered synonyms and unmatched entries.
-    """ 
- 
-    #notes:
-    #generalize input column labels
-    #canonicalName taxonID -> query_canonicalName query_taxonID
-    #ncbi_canonicalName, ncbi_id -> target_canonicalName, target_id, 
+        tuple:
+            - matched_df (pd.DataFrame): Cleaned dataset with accepted matches and resolved synonyms.
+            - unmatched_df (pd.DataFrame): Dataset with entries that could not be matched.
+            - possible_typos_df (pd.DataFrame or str): Entries with minor differences (e.g. typos), or a string if none.
+    """
+    
+    # Features used by the model for similarity scoring
+    relevant_features = [
+        'rank_similarity', 'levenshtein_distance', 'damerau_levenshtein_distance', 'ratio',
+        'q_ratio', 'token_sort_ratio', 'w_ratio', 'token_set_ratio', 'jaro_winkler_similarity',
+        'partial_ratio', 'hamming_distance', 'jaro_similarity'
+    ]
 
-    
-    relevant_features=['rank_similarity', 'levenshtein_distance', 'damerau_levenshtein_distance', 'ratio', 'q_ratio', 'token_sort_ratio', 'w_ratio', 'token_set_ratio', 'jaro_winkler_similarity', 'partial_ratio', 'hamming_distance', 'jaro_similarity']
-    
-    # Load GBIF dictionary
+    # Load synonym dictionaries from GBIF and NCBI
     gbif_synonyms_names, gbif_synonyms_ids, gbif_synonyms_ids_to_ids = load_gbif_dictionary()
-    
-    # Load NCBI dictionary
     ncbi_synonyms_names, ncbi_synonyms_ids = load_ncbi_dictionary()
-    
-    df_matched, df_unmatched = find_matching(query_dataset, target_dataset, model, relevant_features, 0.20)
-    
-    # Filter rows where canonicalName is identical to ncbi_canonicalName
-    identical = df_matched.query("canonicalName == ncbi_canonicalName")
-    
-    # Filter rows where canonicalName is not identical to ncbi_canonicalName
-    not_identical = df_matched.query("(canonicalName != ncbi_canonicalName) and taxonID != -1")
 
-    # Filter rows where canonicalName is not identical to ncbi_canonicalName
-    only_ncbi = df_matched.query("(taxonID == -1) and ncbi_lineage_ranks != -1")
-    
-    matching_synonims = []
+    # Run matching based on similarity model
+    df_matched, df_unmatched = find_matching(query_dataset, target_dataset, model, relevant_features, 0.20)
+
+    # Normalize string fields by stripping whitespace
+    df_matched["canonicalName"] = df_matched["canonicalName"].astype(str).str.strip()
+    df_matched["ncbi_canonicalName"] = df_matched["ncbi_canonicalName"].astype(str).str.strip()
+
+    # Identify exact matches
+    identical = df_matched[
+        (df_matched["canonicalName"] == df_matched["ncbi_canonicalName"]) &
+        (df_matched["canonicalName"] != "-1")
+    ]
+
+    # Identify non-identical pairs that are still valid
+    not_identical = df_matched[
+        (df_matched["canonicalName"] != df_matched["ncbi_canonicalName"]) &
+        (df_matched["canonicalName"] != "-1") &
+        (df_matched["ncbi_canonicalName"] != "-1")
+    ]
+
+    # Collect entries that didn’t fall into either category
+    used_idx = set(identical.index) | set(not_identical.index)
+    only_ncbi = df_matched.loc[~df_matched.index.isin(used_idx)]
+
+    matching_synonyms = []
     excluded_data = []
-    
-    # Preprocessing: Convert names to lowercase only once
+
+    # Preprocess synonym dictionaries and matched names to lowercase
     not_identical_ = not_identical.copy()
     not_identical_[['canonicalName', 'ncbi_canonicalName']] = not_identical_[['canonicalName', 'ncbi_canonicalName']].apply(lambda x: x.str.lower())
     gbif_synonyms_lower = {k.lower(): {v.lower() for v in vs} for k, vs in gbif_synonyms_names.items()}
     ncbi_synonyms_lower = {k.lower(): {v.lower() for v in vs} for k, vs in ncbi_synonyms_names.items()}
-    
+
+    # Check if the mismatches are due to synonymy
     for index, row in not_identical_.iterrows():
-        gbif_canonicalName = row['canonicalName']
-        ncbi_canonicalName = row['ncbi_canonicalName']
-    
-        # Use sets for synonym comparison
-        gbif_synonyms_set = gbif_synonyms_lower.get(gbif_canonicalName, set())
-        ncbi_synonyms_set = ncbi_synonyms_lower.get(ncbi_canonicalName, set())
-    
-        if gbif_canonicalName in ncbi_synonyms_set or ncbi_canonicalName in gbif_synonyms_set or gbif_synonyms_set & ncbi_synonyms_set:
-            matching_synonims.append(row)
+        gbif_name = row['canonicalName']
+        ncbi_name = row['ncbi_canonicalName']
+        gbif_set = gbif_synonyms_lower.get(gbif_name, set())
+        ncbi_set = ncbi_synonyms_lower.get(ncbi_name, set())
+
+        if gbif_name in ncbi_set or ncbi_name in gbif_set or gbif_set & ncbi_set:
+            matching_synonyms.append(row)
         else:
             excluded_data.append(row)
-    
-    # Convert lists to DataFrame only after loop
+
+    # Convert excluded entries to DataFrame
     excluded_data_df = pd.DataFrame(excluded_data)
     doubtful = excluded_data_df.copy()
-        
+
     if not doubtful.empty:
         doubtful = doubtful.dropna(subset=['canonicalName', 'ncbi_canonicalName'])
-        # Calculate Levenshtein distance for non-identical pairs
-        lev_dist = doubtful.apply(lambda row: Levenshtein.distance(row['canonicalName'], row['ncbi_canonicalName']), axis=1)
-    
-        # Create a copy of the filtered DataFrame for non-identical pairs
+
+        # Compute Levenshtein distance to identify likely typos
+        lev_dist = doubtful.apply(
+            lambda row: Levenshtein.distance(row['canonicalName'], row['ncbi_canonicalName']),
+            axis=1
+        )
         similar_pairs = doubtful.copy()
-        
-        # Add the Levenshtein distance as a new column
         similar_pairs["levenshtein_distance"] = lev_dist
-    
-        possible_typos_df = pd.DataFrame(similar_pairs).query("levenshtein_distance <= 3").sort_values('distance')
-        
+
+        # Select potential typos (Levenshtein distance ≤ 3)
+        possible_typos_df = similar_pairs.query("levenshtein_distance <= 3").sort_values('levenshtein_distance')
         gbif_excluded = query_dataset[query_dataset.taxonID.isin(doubtful.taxonID)]
         ncbi_excluded = target_dataset[target_dataset.ncbi_id.isin(doubtful.ncbi_id)]
-    else: 
-        possible_typos_df = "No possible typos detected"
-    
-
-
-    # Create separate DataFrame for included and excluded data
-    try:
-        df_matching_synonims = pd.DataFrame(matching_synonims).drop_duplicates()
-        df_matching_synonims.loc[:, 'ncbi_id'] = df_matching_synonims['ncbi_id'].astype(int)
-    except KeyError as e:
-        df_matching_synonims = pd.DataFrame() 
-    
-    # Assuming you have your sets defined
-    iden = set(identical.ncbi_id)
-    
-    if not doubtful.empty:
-        # Filter out the excluded IDs from other DataFrames
-        ncbi_excluded_filtered = ncbi_excluded[~ncbi_excluded.ncbi_id.isin(iden)]
-
-    
-    if tree_generation and not doubtful.empty:
-        # Concatenate similar pairs with identical samples
-        matched_df = pd.concat([identical , df_matching_synonims, only_ncbi, ncbi_excluded_filtered])
     else:
-        matched_df = pd.concat([identical , df_matching_synonims])
-        
+        possible_typos_df = "No possible typos detected"
+
+    # Convert list of synonym matches to DataFrame
+    try:
+        df_matching_synonyms = pd.DataFrame(matching_synonyms).drop_duplicates()
+        df_matching_synonyms.loc[:, 'ncbi_id'] = df_matching_synonyms['ncbi_id'].astype(int)
+    except KeyError:
+        df_matching_synonyms = pd.DataFrame()
+
+    # Filter out duplicates from NCBI matches by keeping only the one with the best (lowest) distance
+    matched_df = pd.concat([identical, df_matching_synonyms])
+    iden = set(identical.ncbi_id)
+
+    if tree_generation and not doubtful.empty:
+        ncbi_excluded_filtered = ncbi_excluded[~ncbi_excluded.ncbi_id.isin(iden)]
+        matched_df = pd.concat([matched_df, only_ncbi, ncbi_excluded_filtered])
+    else:
+        matched_df = pd.concat([matched_df, only_ncbi])
+
+    # Final cleanup
     matched_df = matched_df.infer_objects(copy=False).fillna(-1)
     matched_df['taxonID'] = matched_df['taxonID'].astype(int)
-    
-    if not doubtful.empty:
-        # Extract the "gbif_taxonomy" strings from non-similar pairs
-        unmatched_df = pd.concat([df_unmatched, gbif_excluded])
-    else:
-        unmatched_df = df_unmatched
-    
+
+    # Reconstruct unmatched dataset with doubtful entries if any
+    unmatched_df = pd.concat([df_unmatched, gbif_excluded]) if not doubtful.empty else df_unmatched
     unmatched_df = unmatched_df.infer_objects(copy=False).fillna(-1)
-    
+
+    # Replace placeholder values with None
     matched_df = matched_df.replace([-1, '-1'], None)
     unmatched_df = unmatched_df.replace([-1, '-1'], None)
+
+    # Resolve duplicated ncbi_id by keeping only the match with the smallest distance
+    matched_df['ncbi_id'] = pd.to_numeric(matched_df['ncbi_id'], errors='coerce').astype('Int64')
+    matched_df['distance'] = pd.to_numeric(matched_df['distance'], errors='coerce')
+    duplicated_ids = matched_df['ncbi_id'][matched_df['ncbi_id'].duplicated(keep=False)]
+    dups = matched_df[matched_df['ncbi_id'].isin(duplicated_ids)]
+    dups_sorted = dups.sort_values(by=['ncbi_id', 'distance'], key=lambda col: col.isna().astype(int))
+    dups_best = dups_sorted.drop_duplicates(subset='ncbi_id', keep='first')
+    matched_df = matched_df[~matched_df.index.isin(dups.index)]
+    matched_df = pd.concat([matched_df, dups_best], ignore_index=True)
+
     return matched_df, unmatched_df, possible_typos_df
+
 
 
 def add_gbif_synonyms(df):

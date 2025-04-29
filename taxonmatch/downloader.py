@@ -613,28 +613,7 @@ def load_inat_samples(inat_path_file):
         inat_full.rename(columns={"scientificName": "canonicalName"}, inplace=True)
         inat_full['inat_taxonomy'] = inat_full.apply(create_gbif_taxonomy, axis=1)
 
-
-        cols = list(inat_full.columns)
-
-        inat_filterd = inat_full[~inat_full.taxonRank.isin(["subspecies", "species", "genus", "class", "family", "order", "phylum", "kingdom"])]
-
-        # Filter duplicate rows based on "inat_scientificName"
-        duplicates = inat_full[inat_full["canonicalName"].duplicated(keep=False)]
-
-        # Count non-NaN values for each row
-        duplicates_=duplicates.copy()
-        duplicates_["non_null_count"] = duplicates.notna().sum(axis=1)
-
-        # Sort by "inat_scientificName" and then by the number of non-NaN values (descending)
-        preferred = duplicates_.sort_values(["canonicalName", "non_null_count"], ascending=[True, False])
-
-        # Keep only the row with the most non-NaN values for each "inat_scientificName
-        final_result = preferred.drop_duplicates(subset="canonicalName", keep="first")
-
-
-        non_duplicates = inat_full[~inat_full["canonicalName"].duplicated(keep=False)]
-        combined = pd.concat([final_result, non_duplicates])[cols]
-
+        combined = inat_full.copy()
         combined.columns = ['inat_taxon_id', 'inat_parentNameUsageID', 'kingdom', 'phylum',
                'class', 'order', 'family', 'genus', 'specificEpithet',
                'infraspecificEpithet', 'inat_modified', 'inat_canonical_name', 'inat_taxonRank',
@@ -647,6 +626,8 @@ def load_inat_samples(inat_path_file):
         print("Done.")
     
     return combined
+
+
 
 
 def download_inat_taxonomy(output_folder=None):
@@ -753,6 +734,83 @@ def select_inat_clade(inat_dataset, selected_string):
     )
 
     return filtered_dataset
+
+
+def build_taxonomy_ids_names_ranks(df):
+    """
+    Adds three columns:
+    - `inat_taxonomy_ids`: chain of taxonomic IDs
+    - `inat_lineage_names`: canonical names associated with the IDs
+    - `inat_lineage_ranks`: taxonomic ranks associated with the IDs
+
+    Returns:
+        df: the original DataFrame with the three additional columns
+    """
+
+    # 1. Auxiliary dictionaries
+    id_to_parent = {}
+    id_to_name = {}
+    id_to_rank = {}
+
+    for row in df.itertuples(index=False):
+        try:
+            taxon_id = int(row.inat_taxon_id)
+            if pd.notna(row.inat_parentNameUsageID):
+                parent_id_str = str(row.inat_parentNameUsageID).strip().split('/')[-1]
+                if parent_id_str.isdigit():
+                    parent_id = int(parent_id_str)
+                    id_to_parent[taxon_id] = parent_id
+
+            # Canonical name and rank
+            if pd.notna(row.inat_canonical_name):
+                id_to_name[taxon_id] = str(row.inat_canonical_name).strip()
+            if pd.notna(row.inat_taxonRank):
+                id_to_rank[taxon_id] = str(row.inat_taxonRank).strip()
+
+        except:
+            continue
+
+    # 2. Full lineage tracing for each taxon_id
+    def trace_full_lineage(taxon_id):
+        if pd.isna(taxon_id):
+            return [], [], []
+
+        taxon_id = int(taxon_id)
+        ids = [taxon_id]
+        names = [id_to_name.get(taxon_id, '').strip().lower()]
+        ranks = [id_to_rank.get(taxon_id, '')]
+
+        seen = set(ids)
+        while taxon_id in id_to_parent:
+            parent_id = id_to_parent[taxon_id]
+            if parent_id == 1 or parent_id in seen:
+                break
+            parent_id = id_to_parent[taxon_id]
+            if parent_id in seen:
+                break
+            ids.insert(0, parent_id)
+            names.insert(0, id_to_name.get(parent_id, '').strip().lower())
+            ranks.insert(0, id_to_rank.get(parent_id, ''))
+            seen.add(parent_id)
+            taxon_id = parent_id
+
+        return ids, names, ranks
+
+    # 3. Apply to each row
+    all_ids, all_names, all_ranks = [], [], []
+
+    for row in df.itertuples(index=False):
+        ids, names, ranks = trace_full_lineage(row.inat_taxon_id)
+        all_ids.append(';'.join(str(x) for x in ids))
+        all_names.append(';'.join(names))
+        all_ranks.append(';'.join(ranks))
+
+    df['inat_taxonomy_ids'] = all_ids
+    df['inat_lineage_names'] = all_names
+    df['inat_lineage_ranks'] = all_ranks
+
+    return df
+
 
 
 def get_bees_from_beebiome_dataframe(ncbi_filtered):
