@@ -383,8 +383,8 @@ def fast_check_taxon_consistency(df):
     required_sources = ['ncbi', 'gbif']
     optional_sources = ['inat']
     all_name_cols = [f"{src}_canonical_name" for src in required_sources]
-    if 'inaturalist_canonical_name' in df.columns:
-        all_name_cols.append('inaturalist_canonical_name')
+    if 'inat_canonical_name' in df.columns:
+        all_name_cols.append('inat_canonical_name')
 
     condition = df[all_name_cols].isna().all(axis=1)
     missing_all_canonicals = df[condition]

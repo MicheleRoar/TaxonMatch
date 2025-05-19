@@ -800,7 +800,7 @@ def capitalize_first_word(s):
 def convert_tree_to_dataframe(tree, query_dataset, target_dataset, path, inat_dataset=None, index=False):
     """
     Converts a taxonomic tree into a pandas DataFrame, merges it with external datasets (NCBI, GBIF, and optionally iNaturalist),
-    enriches it with synonym information, applies capitalization, standardizes column names, 
+    enriches it with synonym information, applies capitalization, standardizes column names,
     and saves the final DataFrame to the specified CSV file.
 
     Args:
@@ -814,16 +814,17 @@ def convert_tree_to_dataframe(tree, query_dataset, target_dataset, path, inat_da
     Returns:
         DataFrame: The final merged and cleaned DataFrame.
     """
+
     # Step 1: Copy and optionally index the tree
     indexed_tree = tree[0].copy()
     if index:
         indexed_tree = index_tree(tree[0], include_name=True)
 
-    # Step 2: Convert tree to DataFrame
+    # Step 2: Convert the tree to a DataFrame
     indexed_tree_data = tree_to_dataframe_updated(indexed_tree, inat_dataset)
     df_indexed_tree = pd.DataFrame(indexed_tree_data).tail(-1)  # Exclude the root node
 
-    # Step 3: Clean and cast IDs
+    # Step 3: Cast taxon IDs
     df_indexed_tree['ncbi_id'] = pd.to_numeric(df_indexed_tree['ncbi_id'], errors='coerce').fillna(-1).astype(int)
     df_indexed_tree['gbif_taxon_id'] = pd.to_numeric(df_indexed_tree['gbif_taxon_id'], errors='coerce').fillna(-1).astype(int)
     if inat_dataset is not None and 'inat_taxon_id' in df_indexed_tree.columns:
@@ -832,7 +833,7 @@ def convert_tree_to_dataframe(tree, query_dataset, target_dataset, path, inat_da
     target_dataset['ncbi_id'] = target_dataset['ncbi_id'].astype(int)
     query_dataset['taxonID'] = query_dataset['taxonID'].astype(int)
 
-    # Step 4: Merge tree DataFrame with GBIF data
+    # Step 4: Merge with GBIF
     merged_gbif = pd.merge(
         df_indexed_tree,
         query_dataset[['taxonID', 'canonicalName', 'gbif_taxonomy']],
@@ -842,7 +843,7 @@ def convert_tree_to_dataframe(tree, query_dataset, target_dataset, path, inat_da
     )
     merged_gbif['gbif_canonical_name'] = merged_gbif['canonicalName'].str.lower()
 
-    # Step 5: Merge with NCBI data
+    # Step 5: Merge with NCBI
     merged_ncbi = pd.merge(
         merged_gbif,
         target_dataset[['ncbi_id', 'ncbi_canonicalName', 'ncbi_target_string']],
@@ -850,7 +851,7 @@ def convert_tree_to_dataframe(tree, query_dataset, target_dataset, path, inat_da
         how='left'
     )
 
-    # Step 6: Merge with iNaturalist data if provided
+    # Step 6: Merge with iNaturalist if available
     if inat_dataset is not None:
         merged_inat = pd.merge(
             merged_ncbi,
@@ -858,15 +859,16 @@ def convert_tree_to_dataframe(tree, query_dataset, target_dataset, path, inat_da
             on='inat_taxon_id',
             how='left'
         )
-        final_dataset = merged_inat
+        final_dataset_ = merged_inat
     else:
-        final_dataset = merged_ncbi
+        final_dataset_ = merged_ncbi
 
+    # Step 6a: Alias for ncbi_taxon_id (used later)
+    final_dataset_['ncbi_taxon_id'] = final_dataset_['ncbi_id']
+    
     # Step 7: Add synonym columns
     gbif_synonyms_names, gbif_synonyms_ids, gbif_synonyms_ids_to_ids = load_gbif_dictionary()
     ncbi_synonyms_names, ncbi_synonyms_ids = load_ncbi_dictionary()
-
-    final_dataset_ = final_dataset.copy()
 
     final_dataset_['gbif_synonyms_names'] = final_dataset_['taxonID'].map(
         lambda x: '; '.join([name for name, _ in gbif_synonyms_ids_to_ids.get(x, [])]) if x in gbif_synonyms_ids_to_ids else None
@@ -880,14 +882,17 @@ def convert_tree_to_dataframe(tree, query_dataset, target_dataset, path, inat_da
         lambda x: '; '.join(ncbi_synonyms_ids.get(x, [])) if x in ncbi_synonyms_ids else None
     )
 
+    # Step 8: Assign unique ID and clean missing values
     final_dataset_['id'] = range(1, len(final_dataset_) + 1)
-
-    # Step 8: Fill missing values consistently
     final_dataset_ = final_dataset_.apply(lambda col: col.fillna(-1) if col.dtypes != 'object' else col.fillna("-1"))
     final_dataset_ = final_dataset_.replace([-1, '-1', ""], None)
     final_dataset_['Index'] = final_dataset_['Index'].fillna('').astype(str)
 
-    # Step 9: Capitalize the first word of canonical names
+    # Step 9: Extract hierarchical path and node name if indexing is enabled
+    if index:
+        final_dataset_[['hierarchical_path', 'node_name']] = final_dataset_['Index'].str.extract(r'^([\d\.]+)\s*(.*)$', expand=True)
+
+    # Step 10: Capitalize canonical names
     prefixes = ["ncbi", "gbif"]
     if inat_dataset is not None:
         prefixes.append("inat")
@@ -896,22 +901,22 @@ def convert_tree_to_dataframe(tree, query_dataset, target_dataset, path, inat_da
         taxon_id_col = f"{prefix}_taxon_id"
         canon_col = f"{prefix}_canonical_name"
 
-        mask = final_dataset_[taxon_id_col].notna() & final_dataset_[canon_col].isna()
-        final_dataset_.loc[mask, canon_col] = final_dataset_.loc[mask, "node_name"].apply(capitalize_first_word)
+        if index:
+            mask = final_dataset_[taxon_id_col].notna() & final_dataset_[canon_col].isna()
+            final_dataset_.loc[mask, canon_col] = final_dataset_.loc[mask, "node_name"].apply(capitalize_first_word)
 
         final_dataset_[canon_col] = final_dataset_[canon_col].apply(capitalize_first_word)
 
-    # Step 10: Standardize column names
+    # Step 11: Rename columns (inat -> inaturalist)
     final_dataset_.rename(columns={
         "hierarchical_path": "path",
-        "inat_taxon_id": "inaturalist_taxon_id",
-        "inat_canonical_name": "inaturalist_canonical_name"
+    
     }, inplace=True)
 
-    # Step 11: Select final columns dynamically
+    # Step 12: Build final column list
+    
     final_columns = [
         "id",
-        "path",
         "ncbi_taxon_id",
         "gbif_taxon_id",
         "ncbi_canonical_name",
@@ -922,21 +927,23 @@ def convert_tree_to_dataframe(tree, query_dataset, target_dataset, path, inat_da
     ]
 
     if inat_dataset is not None:
-        final_columns.insert(4, "inaturalist_taxon_id")
-        final_columns.insert(7, "inaturalist_canonical_name")
+        final_columns.insert(1, "inat_taxon_id")
+        final_columns.insert(5, "inat_canonical_name")
+    
+    if index:
+        final_columns.insert(1, "path")
+        #final_columns.append("node_name")
 
+    # Step 13: Finalize and clean
     final_dataset = final_dataset_[final_columns]
-
-    # Step 12: Clean up synonyms
-    final_dataset['ncbi_synonyms_names'] = final_dataset['ncbi_synonyms_names'].apply(clean_synonyms)
+    final_dataset.loc[:, 'ncbi_synonyms_names'] = final_dataset['ncbi_synonyms_names'].apply(clean_synonyms)
     if inat_dataset is not None:
-        final_dataset['inaturalist_taxon_id'] = final_dataset['inaturalist_taxon_id'].astype('Int64')
+        final_dataset.loc[:, 'inat_taxon_id'] = final_dataset['inat_taxon_id'].astype('Int64')
 
-    # Step 13: Save final dataset
+    # Step 14: Save to file
     final_dataset.to_csv(path, index=False)
 
     return final_dataset
-
 
 
 def find_synonyms(input_term, ncbi_data, gbif_data):

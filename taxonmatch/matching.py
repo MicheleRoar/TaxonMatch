@@ -154,165 +154,202 @@ def find_matching(query_dataset, target_dataset, model, relevant_features, thres
     Matches datasets using a model and calculates the probability of correct matches.
 
     Args:
-    query_dataset (DataFrame): The dataset to query (GBIF).
-    target_dataset (DataFrame): The dataset to match against (NCBI).
-    model: The machine learning model used for matching.
-    relevant_features: Features relevant to the matching process.
-    threshold (float): The threshold for determining a match.
+        query_dataset (DataFrame): The dataset to query (GBIF).
+        target_dataset (DataFrame): The dataset to match against (NCBI).
+        model: The machine learning model used for matching.
+        relevant_features: Features relevant to the matching process.
+        threshold (float): The threshold for determining a match.
 
     Returns:
-    tuple: DataFrames of matched and unmatched entries.
+        tuple: DataFrames of matched and unmatched entries.
     """
 
-    # Remove taxa with numbers from target dataset (these will be reintroduced later)
-    target_dataset_filtered = target_dataset[~target_dataset['ncbi_canonicalName'].str.contains(r'\d')]
+    # Force ncbi_id and taxonID to integers early
+    target_dataset['ncbi_id'] = pd.to_numeric(target_dataset['ncbi_id'], errors='coerce').fillna(-1).astype(int)
+    query_dataset['taxonID'] = pd.to_numeric(query_dataset['taxonID'], errors='coerce').fillna(-1).astype(int)
 
-    # Extract unique taxonomic names
-    target = list(set(target_dataset_filtered.ncbi_target_string))
-    query = list(set(query_dataset.gbif_taxonomy))
+    # Remove taxa with numbers from the target dataset
+    target_dataset_filtered = target_dataset[~target_dataset['ncbi_canonicalName'].str.contains(r'\d', na=False)]
 
-    # Set up the TF-IDF vectorizer for textual similarity
+    # Unique taxonomic names
+    target = list(set(target_dataset_filtered['ncbi_target_string']))
+    query = list(set(query_dataset['gbif_taxonomy']))
+
+    # Vectorization for text similarity
     vectorizer = TfidfVectorizer(analyzer=ngrams, lowercase=True)
     tfidf = vectorizer.fit_transform(target)
 
-    # Find neighbors with TF-IDF scores
+    # Find nearest neighbors
     try:
         distances, indices = find_neighbors_with_fallback(query, tfidf, vectorizer, max_neighbors=3)
     except ValueError as e:
         print(f"Error during neighbor search: {e}")
-        return None  # Return None if an error occurs
+        return None, None
 
-    # Expand results to align query taxa with their closest matches
+    # Expand matches
     expanded_distances = distances.flatten()
     expanded_query = np.repeat(query, distances.shape[1])
     expanded_target = np.array(target)[indices.flatten()]
 
-    matches = np.column_stack((expanded_distances, expanded_query, expanded_target))
+    matches = pd.DataFrame({
+        'distance': expanded_distances,
+        'query_name': expanded_query,
+        'target_name': expanded_target
+    })
 
-    # Convert matches to DataFrame
-    match_df = pd.DataFrame(matches, columns=['distance', 'query_name', 'target_name'])
+    # Merge additional features for prediction
+    matches = matches.merge(query_dataset[['gbif_taxonomy', 'taxonRank']], 
+                             left_on='query_name', right_on='gbif_taxonomy', how='left')\
+                     .merge(target_dataset[['ncbi_target_string', 'ncbi_rank']], 
+                             left_on='target_name', right_on='ncbi_target_string', how='left')
 
-    # Compute similarity features directly
-    match_df = match_df.merge(query_dataset[["gbif_taxonomy", "taxonRank"]], 
-                              left_on="query_name", right_on="gbif_taxonomy", how="left")\
-                       .merge(target_dataset[["ncbi_target_string", "ncbi_rank"]], 
-                              left_on="target_name", right_on="ncbi_target_string", how="left")
+    matches = matches[['query_name', 'target_name', 'distance', 'taxonRank', 'ncbi_rank']]
 
-    match_df = match_df[["query_name", "target_name", "distance", "taxonRank", "ncbi_rank"]]
+    # Compute similarity features
+    similarity_features = compute_similarity_metrics(matches)
 
-    similarity_features = compute_similarity_metrics(match_df)
-
-    # Predict match probabilities using the model
+    # Predict match probabilities
     X_features = similarity_features[relevant_features]
     y_pred = model.predict_proba(X_features)[:, 1]
-    match_df['prediction'] = y_pred
+    matches['prediction'] = y_pred
 
-    # Select best matches exceeding the threshold
-    #match_df = match_df[y_pred > threshold]
-    match_df = match_df.sort_values("prediction", ascending=False).drop_duplicates(["query_name"], keep="first")
+    # Keep only best matches
+    matches = matches.sort_values('prediction', ascending=False).drop_duplicates('query_name', keep='first')
 
-    df2 = target_dataset.merge(match_df, left_on='ncbi_target_string', right_on='target_name', how='inner', suffixes=("_target", "_match"))
-    # Select only the columns of match_df that have the _match suffix and remove the original ones.
-    df2 = df2.drop(columns=["ncbi_rank_target"]).rename(columns={"ncbi_rank_match": "ncbi_rank"})
+    # Merge with full data
+    matched_target = target_dataset.merge(matches, 
+                                          left_on='ncbi_target_string', right_on='target_name', 
+                                          how='inner', suffixes=('_target', '_match')) \
+                                   .drop(columns=['ncbi_rank_target']) \
+                                   .rename(columns={'ncbi_rank_match': 'ncbi_rank'})
 
-    df3 = query_dataset.merge(df2, left_on='gbif_taxonomy', right_on='query_name', how='inner', suffixes=("_target", "_match"))
-    df3 = df3.drop(columns=["taxonRank_target"]).rename(columns={"taxonRank_match": "taxonRank"})
+    matched_full = query_dataset.merge(matched_target, 
+                                       left_on='gbif_taxonomy', right_on='query_name', 
+                                       how='inner', suffixes=('_target', '_match')) \
+                                .drop(columns=['taxonRank_target']) \
+                                .rename(columns={'taxonRank_match': 'taxonRank'})
 
-    # Merge with query dataset and retain necessary columns
-    df3 = df3[
-        ['taxonID', 'parentNameUsageID', 'canonicalName', 'ncbi_id', 'ncbi_canonicalName', 
-         'taxonRank', 'ncbi_rank', 'prediction', 'distance', 'taxonomicStatus', 
-         'gbif_taxonomy', 'ncbi_target_string', 'ncbi_lineage_names', 'ncbi_lineage_ids']
-    ]
+    # Select final columns
+    matched_full = matched_full[[
+        'taxonID', 'parentNameUsageID', 'canonicalName', 'ncbi_id', 'ncbi_canonicalName',
+        'taxonRank', 'ncbi_rank', 'prediction', 'distance', 'taxonomicStatus',
+        'gbif_taxonomy', 'ncbi_target_string', 'ncbi_lineage_names', 'ncbi_lineage_ids'
+    ]]
 
     # Identify unmatched taxa
-    initial = set(query)
-    matched = set(df3.gbif_taxonomy)
-    discarded = list(initial.difference(matched))
+    initial_query_set = set(query)
+    matched_query_set = set(matched_full['gbif_taxonomy'])
+    discarded_queries = list(initial_query_set.difference(matched_query_set))
 
-    # Retrieve unmatched target taxa
-    ncbi_matching = list(set(df3.ncbi_id))
-    ncbi_missing = target_dataset[~target_dataset.ncbi_id.isin(ncbi_matching)]
-    ncbi_missing_df = ncbi_missing[['ncbi_id', 'ncbi_canonicalName', 'ncbi_target_string', 'ncbi_lineage_names', 'ncbi_lineage_ids']]
-    
-    # Restore taxa with numbers (previously removed)
-    ncbi_missing_restored = target_dataset[target_dataset['ncbi_canonicalName'].str.contains(r'\d')]
+    # Find unmatched target taxa
+    matched_ncbi_ids = matched_full['ncbi_id'].fillna(-1).astype(int)
+    ncbi_missing = target_dataset[~target_dataset['ncbi_id'].isin(matched_ncbi_ids)]
 
-    # Combine matched taxa with unmatched target taxa
-    new_df_matched = pd.concat([df3, ncbi_missing_df, ncbi_missing_restored], ignore_index=True).fillna(-1)
+    # Restore NCBI entries with numbers (previously removed)
+    ncbi_missing_with_numbers = target_dataset[target_dataset['ncbi_canonicalName'].str.contains(r'\d', na=False)]
 
-    # Extract unmatched query taxa
-    df_unmatched = query_dataset[query_dataset["gbif_taxonomy"].isin(discarded)]
+    # Combine all matched entries
+    final_matched_df = pd.concat([matched_full, ncbi_missing, ncbi_missing_with_numbers], ignore_index=True).fillna(-1)
 
-    return new_df_matched, df_unmatched
+    # Extract unmatched query entries
+    unmatched_queries_df = query_dataset[query_dataset['gbif_taxonomy'].isin(discarded_queries)]
 
+    return final_matched_df, unmatched_queries_df
+
+
+
+def append_missing_ncbi_entries(matched_df, target_dataset):
+    matched_ncbi_ids = set(matched_df['ncbi_id'].dropna().astype(int))
+    all_ncbi_ids = set(target_dataset['ncbi_id'].dropna().astype(int))
+    missing_ncbi_ids = all_ncbi_ids - matched_ncbi_ids
+
+    missing_ncbi_rows = target_dataset[target_dataset['ncbi_id'].astype(int).isin(missing_ncbi_ids)].copy()
+
+    if missing_ncbi_rows.empty:
+        return matched_df
+
+    for col in ['taxonID', 'parentNameUsageID', 'canonicalName', 'taxonRank', 'prediction',
+                'distance', 'taxonomicStatus', 'gbif_taxonomy']:
+        missing_ncbi_rows[col] = None
+
+    missing_ncbi_rows = missing_ncbi_rows[matched_df.columns]
+    return pd.concat([matched_df, missing_ncbi_rows], ignore_index=True)
+
+
+
+def append_missing_gbif_entries(matched_df, unmatched_df, query_dataset):
+    matched_gbif_ids = set(matched_df['taxonID'].dropna().astype(int))
+    unmatched_gbif_ids = set(unmatched_df['taxonID'].dropna().astype(int))
+    existing_gbif_ids = matched_gbif_ids.union(unmatched_gbif_ids)
+
+    all_gbif_ids = set(query_dataset['taxonID'].dropna().astype(int))
+    missing_gbif_ids = all_gbif_ids - existing_gbif_ids
+
+    missing_gbif_rows = query_dataset[query_dataset['taxonID'].astype(int).isin(missing_gbif_ids)].copy()
+
+    if missing_gbif_rows.empty:
+        return unmatched_df
+
+    return pd.concat([unmatched_df, missing_gbif_rows], ignore_index=True)
 
 
 
 def match_dataset(query_dataset, target_dataset, model, tree_generation=False):
     """
-    Match taxonomic entries between a query dataset (e.g., GBIF) and a target dataset (e.g., NCBI),
-    identifying exact matches, synonyms (cross-dictionary), and possible typos.
+    Match taxonomic entries between a query dataset (GBIF) and a target dataset (NCBI),
+    identify exact matches, synonyms, and potential typos. Ensures sample completeness
+    using reference datasets (if provided).
 
     Args:
-        query_dataset (pd.DataFrame): The input dataset containing taxonomic names and IDs.
-        target_dataset (pd.DataFrame): The reference dataset (e.g., NCBI taxonomy).
-        model: A pre-trained model used to calculate similarity features.
-        tree_generation (bool): Whether to include ambiguous matches for tree reconstruction.
+        query_dataset (DataFrame): GBIF input dataset.
+        target_dataset (DataFrame): NCBI target dataset.
+        model: Trained ML model for similarity.
+        tree_generation (bool): If True, include doubtful matches.
 
     Returns:
-        tuple:
-            - matched_df (pd.DataFrame): Cleaned dataset with accepted matches and resolved synonyms.
-            - unmatched_df (pd.DataFrame): Dataset with entries that could not be matched.
-            - possible_typos_df (pd.DataFrame or str): Entries with minor differences (e.g. typos), or a string if none.
+        matched_df, unmatched_df, possible_typos_df
     """
-    
-    # Features used by the model for similarity scoring
+
     relevant_features = [
         'rank_similarity', 'levenshtein_distance', 'damerau_levenshtein_distance', 'ratio',
         'q_ratio', 'token_sort_ratio', 'w_ratio', 'token_set_ratio', 'jaro_winkler_similarity',
         'partial_ratio', 'hamming_distance', 'jaro_similarity'
     ]
 
-    # Load synonym dictionaries from GBIF and NCBI
-    gbif_synonyms_names, gbif_synonyms_ids, gbif_synonyms_ids_to_ids = load_gbif_dictionary()
-    ncbi_synonyms_names, ncbi_synonyms_ids = load_ncbi_dictionary()
+    gbif_synonyms_names, _, _ = load_gbif_dictionary()
+    ncbi_synonyms_names, _ = load_ncbi_dictionary()
 
-    # Run matching based on similarity model
     df_matched, df_unmatched = find_matching(query_dataset, target_dataset, model, relevant_features, 0.20)
 
-    # Normalize string fields by stripping whitespace
     df_matched["canonicalName"] = df_matched["canonicalName"].astype(str).str.strip()
     df_matched["ncbi_canonicalName"] = df_matched["ncbi_canonicalName"].astype(str).str.strip()
 
-    # Identify exact matches
     identical = df_matched[
         (df_matched["canonicalName"] == df_matched["ncbi_canonicalName"]) &
         (df_matched["canonicalName"] != "-1")
     ]
 
-    # Identify non-identical pairs that are still valid
     not_identical = df_matched[
         (df_matched["canonicalName"] != df_matched["ncbi_canonicalName"]) &
         (df_matched["canonicalName"] != "-1") &
         (df_matched["ncbi_canonicalName"] != "-1")
     ]
 
-    # Collect entries that didn’t fall into either category
     used_idx = set(identical.index) | set(not_identical.index)
     only_ncbi = df_matched.loc[~df_matched.index.isin(used_idx)]
+
+    not_identical_ = not_identical.copy()
+    not_identical_[['canonicalName', 'ncbi_canonicalName']] = not_identical_[
+        ['canonicalName', 'ncbi_canonicalName']
+    ].apply(lambda x: x.str.lower())
+
+    gbif_synonyms_lower = {k.lower(): {v.lower() for v in vs} for k, vs in gbif_synonyms_names.items()}
+    ncbi_synonyms_lower = {k.lower(): {v.lower() for v in vs} for k, vs in ncbi_synonyms_names.items()}
 
     matching_synonyms = []
     excluded_data = []
 
-    # Preprocess synonym dictionaries and matched names to lowercase
-    not_identical_ = not_identical.copy()
-    not_identical_[['canonicalName', 'ncbi_canonicalName']] = not_identical_[['canonicalName', 'ncbi_canonicalName']].apply(lambda x: x.str.lower())
-    gbif_synonyms_lower = {k.lower(): {v.lower() for v in vs} for k, vs in gbif_synonyms_names.items()}
-    ncbi_synonyms_lower = {k.lower(): {v.lower() for v in vs} for k, vs in ncbi_synonyms_names.items()}
-
-    # Check if the mismatches are due to synonymy
-    for index, row in not_identical_.iterrows():
+    for _, row in not_identical_.iterrows():
         gbif_name = row['canonicalName']
         ncbi_name = row['ncbi_canonicalName']
         gbif_set = gbif_synonyms_lower.get(gbif_name, set())
@@ -323,66 +360,63 @@ def match_dataset(query_dataset, target_dataset, model, tree_generation=False):
         else:
             excluded_data.append(row)
 
-    # Convert excluded entries to DataFrame
-    excluded_data_df = pd.DataFrame(excluded_data)
-    doubtful = excluded_data_df.copy()
+    doubtful = pd.DataFrame(excluded_data)
+
 
     if not doubtful.empty:
         doubtful = doubtful.dropna(subset=['canonicalName', 'ncbi_canonicalName'])
-
-        # Compute Levenshtein distance to identify likely typos
         lev_dist = doubtful.apply(
             lambda row: Levenshtein.distance(row['canonicalName'], row['ncbi_canonicalName']),
             axis=1
         )
         similar_pairs = doubtful.copy()
         similar_pairs["levenshtein_distance"] = lev_dist
-
-        # Select potential typos (Levenshtein distance ≤ 3)
         possible_typos_df = similar_pairs.query("levenshtein_distance <= 3").sort_values('levenshtein_distance')
-        gbif_excluded = query_dataset[query_dataset.taxonID.isin(doubtful.taxonID)]
-        ncbi_excluded = target_dataset[target_dataset.ncbi_id.isin(doubtful.ncbi_id)]
+
+        gbif_excluded = query_dataset[query_dataset['taxonID'].isin(doubtful['taxonID'])]
+        ncbi_excluded = target_dataset[target_dataset['ncbi_id'].isin(doubtful['ncbi_id'])]
     else:
         possible_typos_df = "No possible typos detected"
+        gbif_excluded = pd.DataFrame(columns=query_dataset.columns)
+        ncbi_excluded = pd.DataFrame(columns=target_dataset.columns)
 
-    # Convert list of synonym matches to DataFrame
-    try:
-        df_matching_synonyms = pd.DataFrame(matching_synonyms).drop_duplicates()
-        df_matching_synonyms.loc[:, 'ncbi_id'] = df_matching_synonyms['ncbi_id'].astype(int)
-    except KeyError:
-        df_matching_synonyms = pd.DataFrame()
+    df_matching_synonyms = pd.DataFrame(matching_synonyms).drop_duplicates() if matching_synonyms else pd.DataFrame()
 
-    # Filter out duplicates from NCBI matches by keeping only the one with the best (lowest) distance
     matched_df = pd.concat([identical, df_matching_synonyms])
-    iden = set(identical.ncbi_id)
+    iden = set(identical['ncbi_id'])
 
     if tree_generation and not doubtful.empty:
-        ncbi_excluded_filtered = ncbi_excluded[~ncbi_excluded.ncbi_id.isin(iden)]
+        ncbi_excluded_filtered = ncbi_excluded[~ncbi_excluded['ncbi_id'].isin(iden)]
         matched_df = pd.concat([matched_df, only_ncbi, ncbi_excluded_filtered])
     else:
         matched_df = pd.concat([matched_df, only_ncbi])
 
-    # Final cleanup
     matched_df = matched_df.infer_objects(copy=False).fillna(-1)
-    matched_df['taxonID'] = matched_df['taxonID'].astype(int)
+    matched_df['taxonID'] = pd.to_numeric(matched_df['taxonID'], errors='coerce').astype('Int64')
 
-    # Reconstruct unmatched dataset with doubtful entries if any
     unmatched_df = pd.concat([df_unmatched, gbif_excluded]) if not doubtful.empty else df_unmatched
     unmatched_df = unmatched_df.infer_objects(copy=False).fillna(-1)
 
-    # Replace placeholder values with None
     matched_df = matched_df.replace([-1, '-1'], None)
     unmatched_df = unmatched_df.replace([-1, '-1'], None)
 
-    # Resolve duplicated ncbi_id by keeping only the match with the smallest distance
     matched_df['ncbi_id'] = pd.to_numeric(matched_df['ncbi_id'], errors='coerce').astype('Int64')
     matched_df['distance'] = pd.to_numeric(matched_df['distance'], errors='coerce')
+
+    # Deduplicate
     duplicated_ids = matched_df['ncbi_id'][matched_df['ncbi_id'].duplicated(keep=False)]
     dups = matched_df[matched_df['ncbi_id'].isin(duplicated_ids)]
     dups_sorted = dups.sort_values(by=['ncbi_id', 'distance'], key=lambda col: col.isna().astype(int))
     dups_best = dups_sorted.drop_duplicates(subset='ncbi_id', keep='first')
     matched_df = matched_df[~matched_df.index.isin(dups.index)]
     matched_df = pd.concat([matched_df, dups_best], ignore_index=True)
+
+    # Add missing rows if reference datasets are provided
+    if target_dataset is not None:
+        matched_df = append_missing_ncbi_entries(matched_df, target_dataset)
+
+    if query_dataset is not None:
+        unmatched_df = append_missing_gbif_entries(matched_df, unmatched_df, query_dataset)
 
     return matched_df, unmatched_df, possible_typos_df
 

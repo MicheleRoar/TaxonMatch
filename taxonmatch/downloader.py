@@ -733,7 +733,9 @@ def select_inat_clade(inat_dataset, selected_string):
         lambda x: modify_inat_taxonomy(x, selected_string)
     )
 
-    return filtered_dataset
+    filtered_dataset_with_ids = build_taxonomy_ids_names_ranks(filtered_dataset)
+
+    return filtered_dataset_with_ids
 
 
 def build_taxonomy_ids_names_ranks(df):
