@@ -49,6 +49,8 @@ source ~/.zshrc  # or source ~/.bash_profile
 
 ## 🚀 Usage & Workflow
 
+📝 Note: The code examples below are extracted from the notebooks available in the notebooks/ folder. For full examples, outputs, and extended explanations, please refer to those notebooks.
+
 ### 1️⃣ Download Taxonomic Datasets
 ```bash
 import taxonmatch as txm
@@ -63,8 +65,11 @@ ncbi_dataset = txm.download_ncbi_taxonomy()
 # Select a specific clade (example: Apidae)
 gbif_apidae, ncbi_apidae = txm.select_taxonomic_clade("Apidae", gbif_dataset, ncbi_dataset)
 
+# Load a pre-trained model
+model = txm.load_xgb_model()
+
 # Perform taxonomic matching
-matched_df, unmatched_df, possible_typos_df = txm.match_dataset(gbif_apidae, ncbi_apidae)
+matched_df, unmatched_df, possible_typos_df = txm.match_dataset(gbif_apidae, ncbi_apidae, model, tree_generation = True)
 ```
 
 ### 3️⃣ Generate a Phylogenetic Tree
@@ -74,35 +79,33 @@ txm.print_tree(tree, root_name="Apidae")
 txm.save_tree(tree, "taxon_tree.txt")
 ```
 
-### 4️⃣ Add Conservation Status Using IUCN Data
+### 4️⃣ Identify Closest Living Relatives for Fossil Species
+```bash
+# Retrieve the dataset ID associated with a fossil species
+dataset_id = txm.get_dataset_from_species("Ristoria pliocaenica")
+
+# Download taxonomic datasets
+paleodb_dataset = txm.download_gbif_taxonomy(source=dataset_id)
+ncbi_dataset = txm.download_ncbi_taxonomy(source="ncbi")
+
+# Find the closest matching clades for the species
+col_parents, ncbi_parents = txm.select_closest_common_clade(
+    "Ristoria pliocaenica",
+    paleodb_dataset,
+    ncbi_dataset
+)
+```
+
+### 5️⃣ Add Conservation Status Using IUCN Data
 ```bash
 df_with_iucn_status = txm.add_iucn_status_column(matched_df)
 df_with_iucn_status[df_with_iucn_status.iucnRedListCategory.isin(['ENDANGERED', 'CRITICALLY_ENDANGERED', 'VULNERABLE'])]
 ```
 
-### 5️⃣ Identify Closest Living Relatives for Fossil Species
-```bash
-paleodb_dataset = txm.download_gbif_taxonomy(source="paleodb")
-a3cat = txm.download_ncbi_taxonomy(source="a3cat")
-
-query = "Arthropoda;Insecta;Hymenoptera;Formicidae;Formica;Formica seuberti"
-txm.find_top_n_similar(query, a3cat, n_neighbors=4)
-```
-
 ## 📈 Visualization
 ### Distribution of Conservation Status
 ```bash
-import matplotlib.pyplot as plt
-
-conservation_counts = df_with_iucn_status['iucnRedListCategory'].value_counts()
-plt.figure(figsize=(10, 6))
-conservation_counts.plot(kind='bar', color="blue", edgecolor='black')
-plt.title('Distribution by Conservation Status')
-plt.ylabel('Number of Species')
-plt.xlabel('Category')
-plt.xticks(rotation=45)
-plt.grid(axis='y', linestyle='--', alpha=0.7)
-plt.show()
+txm.plot_conservation_statuses(df_with_iucn_status)
 ```
 
 ## License
