@@ -108,10 +108,6 @@ df_with_iucn_status[df_with_iucn_status.iucnRedListCategory.isin(['ENDANGERED', 
 txm.plot_conservation_statuses(df_with_iucn_status)
 ```
 
-## License
-
-This project is licensed under the MIT License.
-
 ## 🤝 Contributing & Maintenance
 
 If you want to contribute to **TaxonMatch**:
