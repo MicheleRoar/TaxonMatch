@@ -582,3 +582,76 @@ def find_gbif_similar_taxa(query_dataset, target_dataset, column, top_n=3):
     final_df = pd.concat([exact_matches, df_approx_final], ignore_index=True)
 
     return add_gbif_synonyms(final_df)
+
+
+def select_closest_common_clade(species_name, gbif_data, ncbi_data):
+    import re
+
+    if isinstance(gbif_data, (list, tuple)):
+        gbif_data = gbif_data[0]
+    if isinstance(ncbi_data, (list, tuple)):
+        ncbi_data = ncbi_data[0]
+
+    def extract_after_clade(clade, lineage_string):
+        parts = lineage_string.lower().split(';')
+        if clade not in parts:
+            return ''
+        idx = parts.index(clade)
+        return ';'.join(parts[idx + 1:])
+
+    def safe_trim_ids(ids_str, names_str):
+        ids = ids_str.split(';')
+        names = names_str.split(';')
+        if len(ids) < len(names):
+            print(f"[Mismatch] {len(names)} names vs {len(ids)} ids")
+            return ';'.join(ids)  # fallback: restituisci tutto
+        return ';'.join(ids[-len(names):])
+
+    # Recupera la riga della specie se presente
+    gbif_row = gbif_data[gbif_data["canonicalName"].str.lower() == species_name.lower()]
+    ncbi_row = ncbi_data[ncbi_data["ncbi_canonicalName"].str.lower() == species_name.lower()]
+
+    if gbif_row.empty and ncbi_row.empty:
+        raise ValueError(f"Species '{species_name}' not found in either dataset.")
+
+    # Estrai il lineage GBIF o NCBI per scorrere a ritroso
+    gbif_lineage = gbif_row.iloc[0]["gbif_taxonomy"].lower().split(";")[:-1] if not gbif_row.empty else []
+    ncbi_lineage = ncbi_row.iloc[0]["ncbi_lineage_names"].lower().split(";")[:-1] if not ncbi_row.empty else []
+
+    lineage_to_search = gbif_lineage if gbif_lineage else ncbi_lineage
+
+    for clade in reversed(lineage_to_search):
+        pattern = r'\b' + re.escape(clade) + r'\b;'
+        gbif_clade = gbif_data[gbif_data["gbif_taxonomy"].str.lower().str.contains(pattern)]
+        ncbi_clade = ncbi_data[ncbi_data["ncbi_lineage_names"].str.lower().str.contains(pattern)]
+
+        gbif_species = gbif_clade["canonicalName"].str.lower().unique().tolist()
+        ncbi_species = ncbi_clade["ncbi_canonicalName"].str.lower().unique().tolist()
+
+        if len(gbif_species) > 1 or len(ncbi_species) > 1:
+            print(f"Last common node: {clade}")
+
+            # Ricostruisci GBIF
+            gbif_clade_ = gbif_clade.copy()
+            gbif_clade_["gbif_taxonomy"] = clade + ";" + gbif_clade_["gbif_taxonomy"].apply(lambda x: extract_after_clade(clade, x))
+            gbif_clade_["gbif_taxonomy_ids"] = gbif_clade_.apply(
+                lambda row: ';'.join(row["gbif_taxonomy_ids"].split(";")[-len(row["gbif_taxonomy"].split(";")):]), axis=1
+            )
+
+            # Ricostruisci NCBI
+            ncbi_clade_ = ncbi_clade.copy()
+            ncbi_clade_["ncbi_lineage_names"] = clade + ";" + ncbi_clade_["ncbi_lineage_names"].apply(lambda x: extract_after_clade(clade, x))
+            ncbi_clade_["ncbi_target_string"] = clade + ";" + ncbi_clade_["ncbi_target_string"].apply(lambda x: extract_after_clade(clade, x))
+
+            # Usa safe_trim_ids per trimming robusto
+            ncbi_clade_["ncbi_lineage_ids"] = ncbi_clade_.apply(
+                lambda row: safe_trim_ids(row["ncbi_lineage_ids"], row["ncbi_lineage_names"]), axis=1
+            )
+            ncbi_clade_["ncbi_lineage_ranks"] = ncbi_clade_.apply(
+                lambda row: safe_trim_ids(row["ncbi_lineage_ranks"], row["ncbi_lineage_names"]), axis=1
+            )
+
+            return gbif_clade_, ncbi_clade_
+
+    raise ValueError(f"No common clade found for '{species_name}' with more than one species.")
+

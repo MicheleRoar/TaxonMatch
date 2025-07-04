@@ -468,7 +468,7 @@ def download_ncbi_taxonomy(output_folder=None, source=None):
         # Prepare final subsets for return
         ncbi_full = nodes_df[['ncbi_id', 'ncbi_lineage_names', 'ncbi_lineage_ids', 'ncbi_canonicalName', 'ncbi_rank', 'ncbi_lineage_ranks', 'ncbi_target_string']]
         ncbi_subset = ncbi_full.copy()
-        ncbi_filtered = ncbi_subset[ncbi_subset["ncbi_rank"].isin(target_ranks)]
+        ncbi_filtered = ncbi_subset[ncbi_subset["ncbi_rank"].isin(target_ranks)].copy()
     
     finally:
         done_event.set()
@@ -564,7 +564,11 @@ def load_a3cat_dataframe(ncbi_filtered):
         
         # Download the file and load the data into a pandas DataFrame
         df = pd.read_csv(download_link, sep='\t')
-        a3cat = ncbi_filtered[ncbi_filtered.ncbi_id.astype(int).isin(df.TaxId)]
+        df['TaxId'] = df['TaxId'].astype(int)
+        ncbi_filtered = ncbi_filtered.copy()
+        ncbi_filtered['ncbi_id'] = ncbi_filtered['ncbi_id'].astype(int)
+        a3cat = pd.merge(ncbi_filtered, df, left_on='ncbi_id', right_on='TaxId', how='inner')
+
         print(f"a3cat {version} downloaded")
         return a3cat
     else:
@@ -740,16 +744,16 @@ def select_inat_clade(inat_dataset, selected_string):
 
 def build_taxonomy_ids_names_ranks(df):
     """
-    Adds three columns:
-    - `inat_taxonomy_ids`: chain of taxonomic IDs
-    - `inat_lineage_names`: canonical names associated with the IDs
-    - `inat_lineage_ranks`: taxonomic ranks associated with the IDs
+    Constructs taxonomic lineage info: IDs, names, and ranks.
+    Uses `inat_taxonomy` as reference to determine truncation root (if pre-filtered).
 
-    Returns:
-        df: the original DataFrame with the three additional columns
+    Adds 3 new columns:
+        - inat_taxonomy_ids
+        - inat_lineage_names
+        - inat_lineage_ranks
     """
 
-    # 1. Auxiliary dictionaries
+    # 1. Build parent/name/rank dictionaries
     id_to_parent = {}
     id_to_name = {}
     id_to_rank = {}
@@ -757,59 +761,69 @@ def build_taxonomy_ids_names_ranks(df):
     for row in df.itertuples(index=False):
         try:
             taxon_id = int(row.inat_taxon_id)
+
+            # Parent ID
             if pd.notna(row.inat_parentNameUsageID):
                 parent_id_str = str(row.inat_parentNameUsageID).strip().split('/')[-1]
                 if parent_id_str.isdigit():
-                    parent_id = int(parent_id_str)
-                    id_to_parent[taxon_id] = parent_id
+                    id_to_parent[taxon_id] = int(parent_id_str)
 
-            # Canonical name and rank
+            # Canonical name + rank
             if pd.notna(row.inat_canonical_name):
-                id_to_name[taxon_id] = str(row.inat_canonical_name).strip()
+                id_to_name[taxon_id] = str(row.inat_canonical_name).strip().lower()
             if pd.notna(row.inat_taxonRank):
                 id_to_rank[taxon_id] = str(row.inat_taxonRank).strip()
-
         except:
             continue
 
-    # 2. Full lineage tracing for each taxon_id
-    def trace_full_lineage(taxon_id):
-        if pd.isna(taxon_id):
-            return [], [], []
-
-        taxon_id = int(taxon_id)
-        ids = [taxon_id]
-        names = [id_to_name.get(taxon_id, '').strip().lower()]
-        ranks = [id_to_rank.get(taxon_id, '')]
-
-        seen = set(ids)
-        while taxon_id in id_to_parent:
-            parent_id = id_to_parent[taxon_id]
-            if parent_id == 1 or parent_id in seen:
-                break
-            parent_id = id_to_parent[taxon_id]
-            if parent_id in seen:
-                break
-            ids.insert(0, parent_id)
-            names.insert(0, id_to_name.get(parent_id, '').strip().lower())
-            ranks.insert(0, id_to_rank.get(parent_id, ''))
-            seen.add(parent_id)
-            taxon_id = parent_id
-
-        return ids, names, ranks
-
-    # 3. Apply to each row
-    all_ids, all_names, all_ranks = [], [], []
+    # 2. Trace full lineage per row, then truncate to match inat_taxonomy
+    ids_out, names_out, ranks_out = [], [], []
 
     for row in df.itertuples(index=False):
-        ids, names, ranks = trace_full_lineage(row.inat_taxon_id)
-        all_ids.append(';'.join(str(x) for x in ids))
-        all_names.append(';'.join(names))
-        all_ranks.append(';'.join(ranks))
+        if pd.isna(row.inat_taxon_id):
+            ids_out.append("")
+            names_out.append("")
+            ranks_out.append("")
+            continue
 
-    df['inat_taxonomy_ids'] = all_ids
-    df['inat_lineage_names'] = all_names
-    df['inat_lineage_ranks'] = all_ranks
+        lineage_ids = []
+        lineage_names = []
+        lineage_ranks = []
+
+        tid = int(row.inat_taxon_id)
+        seen = set()
+
+        # Step A: trace full lineage up to root
+        while tid and tid not in seen:
+            lineage_ids.insert(0, tid)
+            lineage_names.insert(0, id_to_name.get(tid, '').strip().lower())
+            lineage_ranks.insert(0, id_to_rank.get(tid, '').strip())
+
+            seen.add(tid)
+            tid = id_to_parent.get(tid)
+            if tid is None or tid == 1:
+                break
+
+        # Step B: truncate using inat_taxonomy
+        if pd.notna(row.inat_taxonomy):
+            ref_names = [x.strip().lower() for x in str(row.inat_taxonomy).split(';') if x.strip()]
+            if ref_names:
+                try:
+                    start_idx = lineage_names.index(ref_names[0])
+                    lineage_ids = lineage_ids[start_idx:]
+                    lineage_names = lineage_names[start_idx:]
+                    lineage_ranks = lineage_ranks[start_idx:]
+                except ValueError:
+                    # If not found, keep all (fallback)
+                    pass
+
+        ids_out.append(';'.join(str(x) for x in lineage_ids))
+        names_out.append(';'.join(lineage_names))
+        ranks_out.append(';'.join(lineage_ranks))
+
+    df['inat_taxonomy_ids'] = ids_out
+    df['inat_lineage_names'] = names_out
+    df['inat_lineage_ranks'] = ranks_out
 
     return df
 

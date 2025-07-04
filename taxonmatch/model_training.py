@@ -26,11 +26,25 @@ from sklearn.metrics import precision_score
 from sklearn.metrics import recall_score
 from sklearn.metrics import confusion_matrix
 from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_curve
+from sklearn.metrics import auc
+from sklearn.model_selection import cross_val_score
 from sklearn.model_selection import train_test_split
 from sklearn.model_selection import GridSearchCV
 
 
-
+CLASSIFIERS = {
+    "DummyClassifier": DummyClassifier(strategy='stratified', random_state=0),
+    "KNeighborsClassifier": KNeighborsClassifier(3),
+    "DecisionTreeClassifier": DecisionTreeClassifier(random_state=0),
+    "AdaBoostClassifier": AdaBoostClassifier(algorithm='SAMME', random_state=0),
+    "Perceptron": Perceptron(random_state=0),
+    "SVC": SVC(probability=True, random_state=0),
+    "MLPClassifier": MLPClassifier(max_iter=500, random_state=0),
+    "RandomForestClassifier": RandomForestClassifier(random_state=0),
+    "GradientBoostingClassifier": GradientBoostingClassifier(random_state=0),
+    "XGBClassifier": XGBClassifier(use_label_encoder=False, eval_metric='logloss', random_state=0),
+}
 
 def generate_positive_set(gbif_dataset, ncbi_dataset, n):
     """
@@ -259,7 +273,7 @@ def prepare_data(positive_matches, negative_matches):
     return df_output
 
 
-def get_confusion_matrix_values(y_test, y_pred):
+def get_confusion_matrix_values(y_true, y_pred):
     
     """
     Extract values from a confusion matrix for given test labels and predictions.
@@ -272,8 +286,8 @@ def get_confusion_matrix_values(y_test, y_pred):
     tuple: A tuple containing the values of the confusion matrix (TP, FP, FN, TN).
     """
 
-    cm = confusion_matrix(y_test, y_pred)
-    return(cm[0][0], cm[0][1], cm[1][0], cm[1][1])
+    tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
+    return tp, fp, fn, tn
 
 
 def generate_training_test(df_output):
@@ -299,8 +313,8 @@ def generate_training_test(df_output):
 
     return X_train, X_test, y_train, y_test
 
-def compare_models(X_train, X_test, y_train, y_test):    
 
+def compare_models(X_train, X_test, y_train, y_test, cv_folds=5, random_seed=42):
     """
     Compare various machine learning models to find the best performing model.
 
@@ -311,48 +325,88 @@ def compare_models(X_train, X_test, y_train, y_test):
     Returns:
     pd.DataFrame: A DataFrame containing the performance metrics of each model.
     """
-
-    classifiers = {
-        # A collection of different classifiers from scikit-learn library.
-        "DummyClassifier": DummyClassifier(strategy='stratified', random_state=0),
-        "KNeighborsClassifier": KNeighborsClassifier(3),
-        "DecisionTreeClassifier": DecisionTreeClassifier(),
-        "AdaBoostClassifier": AdaBoostClassifier(algorithm='SAMME'),
-        "Perceptron": Perceptron(),
-        "SVC": SVC(),
-        "MLPClassifier": MLPClassifier(max_iter=500),
-        "RandomForestClassifier": RandomForestClassifier(),
-        "GradientBoostingClassifier": GradientBoostingClassifier(),
-        "XGBClassifier": XGBClassifier(),
-    }
+    np.random.seed(random_seed)
     results_list = []
 
-    # DataFrame to store the results of each classifier.
-    for key in classifiers:
-        # Training each classifier and calculating performance metrics.
+    for name, clf in CLASSIFIERS.items():
         start_time = time.time()
-        classifier = classifiers[key]
-        model = classifier.fit(X_train, y_train)
+        model = clf.fit(X_train, y_train)
         y_pred = model.predict(X_test)
 
-        # Calculating various metrics like mean absolute error, accuracy, precision, etc.
-        mae = mean_absolute_error(y_test, y_pred)
-        accuracy = accuracy_score(y_test, y_pred)
-        precision = precision_score(y_test, y_pred, zero_division=0)
-        recall = recall_score(y_test, y_pred)
-        f1 = f1_score(y_test, y_pred, zero_division=0)
-        roc = roc_auc_score(y_test, y_pred)
-        run_time = format(round((time.time() - start_time)/60,2))
+        # Try to get probability scores for AUC
+        try:
+            y_score = model.predict_proba(X_test)[:, 1]
+        except AttributeError:
+            try:
+                y_score = model.decision_function(X_test)
+            except Exception:
+                y_score = None
+
+        roc = roc_auc_score(y_test, y_score) if y_score is not None else np.nan
+        run_time = round((time.time() - start_time) / 60, 2)
         tp, fp, fn, tn = get_confusion_matrix_values(y_test, y_pred)
 
-        # Adding the calculated metrics for each model to the DataFrame.
-        row = {'model': key, 'accuracy': accuracy, 'mae': mae, 'precision': precision, 'recall': recall, 'f1': f1, 'roc': roc, 'run_time': run_time, 'tp': tp, 'fp': fp, 'tn': tn, 'fn': fn}
-        results_list.append(row)
+        # Cross-validation score on training set
+        try:
+            train_cv_accuracy = cross_val_score(clf, X_train, y_train, cv=cv_folds, scoring='accuracy').mean()
+        except Exception:
+            train_cv_accuracy = np.nan
 
-    df_results = pd.DataFrame(results_list)
-    
-    # Returning the sorted results based on accuracy and precision.
-    return df_results.sort_values(['accuracy', 'precision'], ascending=[False, False]).reset_index(drop = True)
+        results_list.append({
+            'model': name,
+            'accuracy': accuracy_score(y_test, y_pred),
+            'train_cv_accuracy': train_cv_accuracy,
+            'mae': mean_absolute_error(y_test, y_pred),
+            'precision': precision_score(y_test, y_pred, zero_division=0),
+            'recall': recall_score(y_test, y_pred),
+            'f1': f1_score(y_test, y_pred, zero_division=0),
+            'roc': roc,
+            'run_time_min': run_time,
+            'tp': tp,
+            'fp': fp,
+            'tn': tn,
+            'fn': fn
+        })
+
+    return pd.DataFrame(results_list).sort_values(['accuracy', 'precision'], ascending=[False, False]).reset_index(drop=True)
+
+
+def plot_roc_curves(models, X_test, y_test, top_n=5, save_path="roc_curves.png"):
+    """
+    Plot ROC curves for top N models (must have `predict_proba` or `decision_function`)
+    """
+    plt.figure(figsize=(8, 6))
+    colormap = plt.colormaps['tab10']
+    plotted = 0
+
+    for i, (name, model) in enumerate(models.items()):
+        try:
+            y_score = model.predict_proba(X_test)[:, 1]
+        except AttributeError:
+            try:
+                y_score = model.decision_function(X_test)
+            except Exception:
+                continue  # Skip models that can't produce scores
+
+        fpr, tpr, _ = roc_curve(y_test, y_score)
+        roc_auc = auc(fpr, tpr)
+        plt.plot(fpr, tpr, label=f'{name} (AUC = {roc_auc:.6f})', color=colormap(i % 10))
+        plotted += 1
+        if plotted >= top_n:
+            break
+
+    plt.plot([0, 1], [0, 1], 'k--', lw=1)
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('ROC Curves of Top Classifiers')
+    plt.legend(loc='lower right')
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.close()
+
+
+
 
 def add_predictions_to_features(features, y_pred):
 

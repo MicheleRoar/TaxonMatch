@@ -333,33 +333,33 @@ def fast_check_taxon_consistency(df):
     print(f"🔹 ID columns: {id_cols}")
     print(f"🔹 Canonical name columns: {name_cols}\n")
 
-    # 🔸 1. Check for duplicate IDs within each column
+    #1. Check for duplicate IDs within each column
     for col in id_cols:
         values = pd.to_numeric(df[col], errors='coerce').dropna().values
         unique, counts = np.unique(values, return_counts=True)
         dup_ids = unique[counts > 1].tolist()
         if dup_ids:
-            print(f"❌ Duplicates found in {col}: {dup_ids}")
+            print(f"Duplicates found in {col}: {dup_ids}")
             problems[f'duplicated_{col}'] = dup_ids
         else:
-            print(f"✅ No duplicates found in {col}")
+            print(f"No duplicates found in {col}")
 
     print("\n---")
 
-    # 🔸 2. Check for duplicate canonical names within each column
+    #2. Check for duplicate canonical names within each column
     for col in name_cols:
         values = df[col].dropna().astype(str).values
         unique, counts = np.unique(values, return_counts=True)
         dup_names = unique[counts > 1].tolist()
         if dup_names:
-            print(f"❌ Duplicates found in canonical names column {col}: {dup_names}")
+            print(f"Duplicates found in canonical names column {col}: {dup_names}")
             problems[f'duplicated_{col}'] = dup_names
         else:
-            print(f"✅ No duplicates found in canonical names column {col}")
+            print(f"No duplicates found in canonical names column {col}")
 
     print("\n---")
 
-    # 🔸 3. Cross-column canonical name conflicts across different rows
+    #3. Cross-column canonical name conflicts across different rows
     print("🔎 Checking for cross-column canonical name overlaps across different rows...\n")
     seen = {}
     cross_conflicts = set()
@@ -367,7 +367,7 @@ def fast_check_taxon_consistency(df):
     for idx, row in df[name_cols].iterrows():
         for val in row.dropna().astype(str).values:
             if val in seen and seen[val] != idx:
-                print(f"⚠️ Name '{val}' appears in multiple rows ({seen[val]} and {idx}) across different columns")
+                print(f"Name '{val}' appears in multiple rows ({seen[val]} and {idx}) across different columns")
                 cross_conflicts.add(val)
             else:
                 seen[val] = idx
@@ -375,11 +375,11 @@ def fast_check_taxon_consistency(df):
     if cross_conflicts:
         problems['canonical_name_overlap_across_columns_different_rows'] = list(cross_conflicts)
     else:
-        print("✅ No overlapping canonical names across different rows")
+        print("No overlapping canonical names across different rows")
 
     print("\n---")
 
-    # 🔸 4. Rows missing all canonical names (inat is optional)
+    #4. Rows missing all canonical names (inat is optional)
     required_sources = ['ncbi', 'gbif']
     optional_sources = ['inat']
     all_name_cols = [f"{src}_canonical_name" for src in required_sources]
@@ -390,15 +390,15 @@ def fast_check_taxon_consistency(df):
     missing_all_canonicals = df[condition]
 
     if not missing_all_canonicals.empty:
-        print(f"❌ Rows missing all canonical names: {len(missing_all_canonicals)}")
+        print(f"Rows missing all canonical names: {len(missing_all_canonicals)}")
         problems['missing_all_canonical_names'] = missing_all_canonicals.index.tolist()
         display(missing_all_canonicals)
     else:
-        print("✅ All rows have at least one canonical name")
+        print("All rows have at least one canonical name")
 
     print("\n---")
 
-    # 🔸 5. Taxon ID present but canonical name missing (inat optional)
+    #5. Taxon ID present but canonical name missing (inat optional)
     for source in ['gbif', 'ncbi', 'inaturalist']:
         id_col = f"{source}_taxon_id"
         name_col = f"{source}_canonical_name"
@@ -409,7 +409,61 @@ def fast_check_taxon_consistency(df):
                 problems[f'{source}_id_without_name'] = missing_name.index.tolist()
                 display(missing_name)
             else:
-                print(f"✅ All rows with {id_col} have a corresponding {name_col}")
+                print(f"All rows with {id_col} have a corresponding {name_col}")
 
-    print("\n✅ Consistency check completed.\n")
+    print("\nConsistency check completed.\n")
     return problems
+
+
+def get_dataset_from_species(species_name, output_folder=None):
+    """
+    Searches for a species in the GBIF Taxon.tsv file located in ./GBIF_output/
+    and returns the dataset title and ID from which the species originates.
+
+    Args:
+        species_name (str): Exact species name (e.g., "Ristoria pliocaenica")
+        output_folder (str or None): Base folder containing 'GBIF_output'. Defaults to current working directory.
+
+    Returns:
+        tuple: (datasetID, dataset title) if found, otherwise an error message string.
+    """
+    # Use current working directory if no output folder is provided
+    if output_folder is None:
+        output_folder = os.getcwd()
+
+    # Construct the full path to the Taxon.tsv file
+    gbif_output_folder = os.path.join(output_folder, 'GBIF_output')
+    tsv_path = os.path.join(gbif_output_folder, 'Taxon.tsv')
+
+    # Check if the file exists
+    if not os.path.isfile(tsv_path):
+        return f"File not found: {tsv_path}"
+
+    # Load the Taxon.tsv file
+    try:
+        gbif_df = pd.read_csv(tsv_path, sep="\t", on_bad_lines='skip', low_memory=False)
+    except Exception as e:
+        return f"Error loading file: {e}"
+
+    # Look for an exact match on the canonicalName field
+    match = gbif_df[gbif_df['canonicalName'].fillna('') == species_name]
+
+    if match.empty:
+        return f"Species '{species_name}' not found in {tsv_path}"
+
+    # Get the dataset ID associated with the matched species
+    dataset_id = match['datasetID'].values[0]
+
+    # Query the GBIF API to get dataset metadata
+    url = f"https://api.gbif.org/v1/dataset/{dataset_id}"
+    response = requests.get(url)
+
+    if response.status_code != 200:
+        return f"API error ({response.status_code}) for dataset {dataset_id}."
+
+    # Extract and return the dataset title
+    data = response.json()
+    title = data.get("title", "Title not available")
+
+    return dataset_id, title
+
