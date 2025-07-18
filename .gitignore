@@ -11,8 +11,13 @@ notebooks/fossils/NCBI_output/
 notebooks/fossils/GBIF_output/
 notebooks/fossils/leucosiidae_taxonomic_tree_df.txt
 
-# Ignore files but allow folders with placeholders
+# Ignore generated dictionaries, but allow placeholders
 taxonmatch/files/dictionaries/*.pkl
 !taxonmatch/files/dictionaries/.placeholder
+
+# Allow model folder structure
 !taxonmatch/files/models/.placeholder
+
+# Allow training_set folder structure and training_set.txt
 !taxonmatch/files/training_set/.placeholder
+!taxonmatch/files/training_set/training_set.txt
