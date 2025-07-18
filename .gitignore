@@ -1,3 +1,8 @@
 notebooks/fossils/NCBI_output/
 notebooks/fossils/.ipynb_checkpoints/
 *.DS_Store
+*.DS_Store
+notebooks/fossils/GBIF_output/
+taxonmatch/files/training_set/
+taxonmatch/files/dictionaries/gbif_dictionaries.pkl
+taxonmatch/files/dictionaries/ncbi_dictionaries.pkl

@@ -109,6 +109,9 @@ def get_ncbi_synonyms(names_path):
     ncbi_synonyms_names = {key: list(value) for key, value in ncbi_synonyms_names.items()}
     ncbi_synonyms_ids = {key: list(value) for key, value in ncbi_synonyms_ids.items()}
 
+    return ncbi_synonyms_names, ncbi_synonyms_ids
+
+
     # Save dictionaries
     save_ncbi_dictionary(ncbi_synonyms_names, ncbi_synonyms_ids)
 

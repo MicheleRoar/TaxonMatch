@@ -10,9 +10,16 @@ import pandas as pd
 import urllib.request
 from tqdm import tqdm
 from bs4 import BeautifulSoup
+from importlib import resources
 from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from taxonmatch.analysis_utils import get_gbif_synonyms
+from taxonmatch.analysis_utils import get_ncbi_synonyms
+from taxonmatch.loader import save_gbif_dictionary
+from taxonmatch.loader import save_ncbi_dictionary
+
 
 
 def create_gbif_taxonomy(row):
@@ -197,6 +204,15 @@ def load_gbif_samples(gbif_path_file, source = None):
         # Remove rows where the number of elements in gbif_taxonomy and gbif_taxonomy_ids do not match
         gbif_subset_cleaned = gbif_subset_cleaned[
         gbif_subset_cleaned.apply(lambda x: len(str(x['gbif_taxonomy']).split(';')) == len(str(x['gbif_taxonomy_ids']).split(';')), axis=1)]
+
+
+        #Download synonym dictionary
+        dictionary_path = resources.files('taxonmatch.files.dictionaries') / 'gbif_dictionaries.pkl'
+        # If the dictionary file doesn't exist, generate and save it
+        if not os.path.exists(dictionary_path):
+            #print("gbif_dictionaries.pkl not found. Generating from dataset...")
+            gbif_synonyms_names, gbif_synonyms_ids, gbif_synonyms_ids_to_ids = get_gbif_synonyms((gbif_subset, gbif_full))
+            save_gbif_dictionary(gbif_synonyms_names, gbif_synonyms_ids, gbif_synonyms_ids_to_ids)
 
     finally:
         done_event.set()
@@ -469,6 +485,15 @@ def download_ncbi_taxonomy(output_folder=None, source=None):
         ncbi_full = nodes_df[['ncbi_id', 'ncbi_lineage_names', 'ncbi_lineage_ids', 'ncbi_canonicalName', 'ncbi_rank', 'ncbi_lineage_ranks', 'ncbi_target_string']]
         ncbi_subset = ncbi_full.copy()
         ncbi_filtered = ncbi_subset[ncbi_subset["ncbi_rank"].isin(target_ranks)].copy()
+
+       
+        dictionary_path = resources.files('taxonmatch.files.dictionaries') / 'ncbi_dictionaries.pkl'
+
+        # If the dictionary file doesn't exist, generate and save it
+        if not os.path.exists(dictionary_path):
+            print("ncbi_dictionaries.pkl not found. Generating from names.dmp...")
+            ncbi_synonyms_names, ncbi_synonyms_ids = get_ncbi_synonyms(str(names_path))
+            save_ncbi_dictionary(ncbi_synonyms_names, ncbi_synonyms_ids)
     
     finally:
         done_event.set()
