@@ -9,6 +9,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.neighbors import NearestNeighbors
 from .model_training import compute_similarity_metrics
 from .loader import load_gbif_dictionary, load_ncbi_dictionary
+from .tree_utils import manage_duplicated_branches, fix_inconsistent_subspecies
 from sklearn.metrics.pairwise import cosine_similarity
 from Levenshtein import distance
 
@@ -418,7 +419,11 @@ def match_dataset(query_dataset, target_dataset, model, tree_generation=False):
     if query_dataset is not None:
         unmatched_df = append_missing_gbif_entries(matched_df, unmatched_df, query_dataset)
 
-    return matched_df, unmatched_df, possible_typos_df
+    # Process dataframes to manage duplicated branches and resolve naming discrepancies
+    df_matched_processed, df_unmatched_processed = manage_duplicated_branches(matched_df, unmatched_df)
+    df_matched_fixed, df_unmatched_fixed, substitution_dict = fix_inconsistent_subspecies(df_matched_processed, df_unmatched_processed)
+
+    return df_matched_fixed, df_unmatched_fixed, possible_typos_df
 
 
 

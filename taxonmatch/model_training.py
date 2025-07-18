@@ -290,12 +290,15 @@ def get_confusion_matrix_values(y_true, y_pred):
     return tp, fp, fn, tn
 
 
-def generate_training_test(df_output):
+def generate_training_test(df_output, test_size=0.3, random_state=0):
     """
     Split the data into training and testing sets.
 
     Args:
     df_output (pd.DataFrame): The DataFrame containing the data.
+    test_size (float): Proportion of the dataset to include in the test split (default: 0.3).
+    random_state (int): Seed for reproducibility (default: 0).
+
 
     Returns:
     tuple: A tuple containing training and testing sets (X_train, X_test, y_train, y_test).
@@ -309,7 +312,7 @@ def generate_training_test(df_output):
     y = df_output["match"].values
 
     # Train-test split
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=0, stratify=y)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=random_state, stratify=y)
 
     return X_train, X_test, y_train, y_test
 
@@ -327,11 +330,13 @@ def compare_models(X_train, X_test, y_train, y_test, cv_folds=5, random_seed=42)
     """
     np.random.seed(random_seed)
     results_list = []
+    trained_models = {}
 
     for name, clf in CLASSIFIERS.items():
         start_time = time.time()
         model = clf.fit(X_train, y_train)
         y_pred = model.predict(X_test)
+        trained_models[name] = model
 
         # Try to get probability scores for AUC
         try:
@@ -356,7 +361,7 @@ def compare_models(X_train, X_test, y_train, y_test, cv_folds=5, random_seed=42)
             'model': name,
             'accuracy': accuracy_score(y_test, y_pred),
             'train_cv_accuracy': train_cv_accuracy,
-            'mae': mean_absolute_error(y_test, y_pred),
+            #'mae': mean_absolute_error(y_test, y_pred),
             'precision': precision_score(y_test, y_pred, zero_division=0),
             'recall': recall_score(y_test, y_pred),
             'f1': f1_score(y_test, y_pred, zero_division=0),
@@ -368,8 +373,10 @@ def compare_models(X_train, X_test, y_train, y_test, cv_folds=5, random_seed=42)
             'fn': fn
         })
 
-    return pd.DataFrame(results_list).sort_values(['accuracy', 'precision'], ascending=[False, False]).reset_index(drop=True)
 
+    df_results = pd.DataFrame(results_list).sort_values(['accuracy', 'precision'], ascending=[False, False]).reset_index(drop=True)
+
+    return df_results, trained_models
 
 def plot_roc_curves(models, X_test, y_test, top_n=5, save_path="roc_curves.png"):
     """
@@ -403,7 +410,7 @@ def plot_roc_curves(models, X_test, y_test, top_n=5, save_path="roc_curves.png")
     plt.grid(True)
     plt.tight_layout()
     plt.savefig(save_path)
-    plt.close()
+    plt.show()
 
 
 

@@ -469,9 +469,6 @@ def generate_taxonomic_tree(df_matched, df_unmatched):
     Returns:
         tuple: tree, node_dict, taxon_id_dict, ncbi_name_to_node, gbif_name_to_node
     """
-    # Process dataframes to manage duplicated branches and resolve naming discrepancies
-    df_matched_processed, df_unmatched_processed = manage_duplicated_branches(df_matched, df_unmatched)
-    df_matched_fixed, df_unmatched_fixed, substitution_dict = fix_inconsistent_subspecies(df_matched_processed, df_unmatched_processed)
 
     tree = Tree()
     node_dict = {}
@@ -480,7 +477,7 @@ def generate_taxonomic_tree(df_matched, df_unmatched):
     gbif_name_to_node = {}
 
     # NCBI section
-    for row in df_matched_fixed.itertuples(index=False):
+    for row in df_matched.itertuples(index=False):
         lineage_names = row.ncbi_lineage_names.lower().split(';')
         lineage_ids = row.ncbi_lineage_ids.split(';')
         canonical_name = row.ncbi_canonicalName.lower()
@@ -507,7 +504,7 @@ def generate_taxonomic_tree(df_matched, df_unmatched):
                 parent_node.add_feature("gbif_taxon_id", ncbi_taxon_id)  # May be overridden later
 
     # GBIF section
-    for row in df_unmatched_fixed.itertuples(index=False):
+    for row in df_unmatched.itertuples(index=False):
         if pd.isna(row.gbif_taxonomy) or pd.isna(row.gbif_taxonomy_ids):
             continue
         lineage_names = row.gbif_taxonomy.lower().split(';')
@@ -940,10 +937,34 @@ def convert_tree_to_dataframe(tree, query_dataset, target_dataset, path, inat_da
     if inat_dataset is not None:
         final_dataset.loc[:, 'inat_taxon_id'] = final_dataset['inat_taxon_id'].astype('Int64')
 
-    # Step 14: Save to file
-    final_dataset.to_csv(path, index=False)
 
-    return final_dataset
+
+    # Step 14: Restore original NBI Labels    
+    final_dataset_fixed = final_dataset.copy(deep=True)
+    
+    final_dataset_fixed = final_dataset_fixed.drop(columns='ncbi_canonical_name', errors='ignore')
+
+    final_dataset_fixed = final_dataset_fixed.merge(
+        target_dataset[['ncbi_id', 'ncbi_canonicalName']].rename(columns={'ncbi_canonicalName': 'ncbi_canonical_name'}),
+        how='left',
+        left_on='ncbi_taxon_id',
+        right_on='ncbi_id'
+    ).drop(columns='ncbi_id')
+
+    cols = final_dataset_fixed.columns.tolist()
+    cols.remove('ncbi_canonical_name')
+    insert_pos = cols.index('gbif_canonical_name')
+    cols.insert(insert_pos, 'ncbi_canonical_name')
+    final_dataset_fixed = final_dataset_fixed[cols]
+
+    # Reorder dataframe
+    final_dataset_fixed = final_dataset_fixed[cols]
+
+
+    # Step 14: Save to file
+    final_dataset_fixed.to_csv(path, index=False)
+
+    return final_dataset_fixed
 
 
 def find_synonyms(input_term, ncbi_data, gbif_data):
