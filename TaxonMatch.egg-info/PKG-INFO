@@ -1,0 +1,177 @@
+Metadata-Version: 2.1
+Name: TaxonMatch
+Version: 2.0.0
+Summary: A tool for taxonomic name resolution using NCBI and GBIF and many other biological sources
+Home-page: https://github.com/MicheleRoar/TaxonMatch
+Author: Michele Leone
+Author-email: micheleleone@outlook.com
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: anytree>=2.12.1
+Requires-Dist: ete3>=3.1.3
+Requires-Dist: Levenshtein>=0.24.0
+Requires-Dist: rapidfuzz>=3.6.1
+Requires-Dist: textdistance>=4.6.1
+Requires-Dist: pandas>=2.2.0
+Requires-Dist: numpy>=1.26
+Requires-Dist: requests>=2.31
+Requires-Dist: pyinaturalist>=0.19.0
+Requires-Dist: scikit-learn>=1.4.0
+Requires-Dist: jsonschema>=4.21.1
+Requires-Dist: cattrs>=23.2.3
+Requires-Dist: arrow>=1.3.0
+Requires-Dist: async-lru>=2.0.4
+Requires-Dist: pyrate-limiter>=2.10.0
+Requires-Dist: requests-cache>=1.2.0
+Requires-Dist: requests-ratelimiter>=0.6.0
+Requires-Dist: rich>=13.7.1
+Requires-Dist: typing_extensions>=4.12.0
+Requires-Dist: filelock>=3.15
+Requires-Dist: joblib>=1.3.2
+Requires-Dist: jellyfish==1.0.3
+Requires-Dist: matplotlib>=3.8.0
+Requires-Dist: networkx>=3.2
+Requires-Dist: pyarrow>=18.0.0
+Requires-Dist: pyparsing>=3.1.1
+Requires-Dist: pillow>=10.2.0
+Requires-Dist: scipy>=1.12.0
+Requires-Dist: threadpoolctl>=3.2.0
+Requires-Dist: tqdm>=4.66.1
+Requires-Dist: PyYAML>=6.0.1
+Requires-Dist: packaging>=23.2
+Requires-Dist: attrs>=23.2.0
+Requires-Dist: charset-normalizer>=2.0.4
+Requires-Dist: Babel>=2.14.0
+Requires-Dist: click>=8.1.7
+Requires-Dist: wordcloud>=1.9.3
+Requires-Dist: xgboost>=2.0.3
+Requires-Dist: urllib3>=2.1.0
+
+# 🌿 TaxonMatch: Integrating Taxonomic Data from GBIF, NCBI, iNaturalist, PaleoDB, IUCN and other sources
+
+## 📌 Introduction
+**TaxonMatch** is a Python framework designed to **integrate, clean, and analyze taxonomic data** from **GBIF**, **NCBI**, **iNaturalist**, **PaleoDB**, and **IUCN**. It enhances taxonomic consistency across biodiversity datasets, simplifies taxonomic name matching, and enables the generation of **phylogenetic trees** based on consolidated data.
+
+### 🔍 Main Features
+- 📥 **Download and clean taxonomic datasets** from GBIF, NCBI, iNaturalist, PaleoDB, and IUCN.
+- 🔗 **Taxonomic name matching** to identify synonyms and discrepancies.
+- 🌳 **Generate phylogenetic trees** from consolidated taxonomic data.
+- 🦴 **Analyze fossil taxa** and identify their closest living relatives.
+- 🌍 **Assign conservation status** to species using IUCN data.
+
+---
+
+## ⚙ Installation & Setup
+
+### 🐍 Create a clean Conda environment (recommended)
+
+```bash
+conda create -n taxonmatch-env python=3.10 -y
+conda activate taxonmatch-env
+
+```
+
+### 📦 Install TaxonMatch
+
+```bash
+#Install the latest version directly from GitHub:
+pip install git+https://github.com/MicheleRoar/TaxonMatch.git
+```
+
+### 📓 (Optional) Run example notebooks
+```bash
+#Install Jupyter and optional plotting libraries:
+pip install notebook ipython ipywidgets
+jupyter notebook
+```
+
+### ⚠️ macOS + XGBoost fix (Apple Silicon only)
+```bash
+#If you're on macOS with M1/M2/M3 and XGBoost fails to load due to libomp.dylib
+arch -arm64 brew install libomp
+export DYLD_LIBRARY_PATH=/opt/homebrew/lib:$DYLD_LIBRARY_PATH
+#To make this permanent, add to your shell config (~/.zshrc or ~/.bash_profile):
+export DYLD_LIBRARY_PATH=/opt/homebrew/lib:$DYLD_LIBRARY_PATH
+#Then run:
+source ~/.zshrc  # or source ~/.bash_profile
+```
+
+## 🚀 Usage & Workflow
+
+📝 Note: The code examples below are extracted from the notebooks available in the notebooks/ folder. For full examples, outputs, and extended explanations, please refer to those notebooks.
+
+### 1️⃣ Download Taxonomic Datasets
+```bash
+import taxonmatch as txm
+
+# Download GBIF and NCBI datasets
+gbif_dataset = txm.download_gbif_taxonomy()
+ncbi_dataset = txm.download_ncbi_taxonomy()
+```
+
+### 2️⃣ Taxonomic Name Matching (GBIF vs NCBI)
+```bash
+# Select a specific clade (example: Apidae)
+gbif_apidae, ncbi_apidae = txm.select_taxonomic_clade("Apidae", gbif_dataset, ncbi_dataset)
+
+# Load a pre-trained model
+model = txm.load_xgb_model()
+
+# Perform taxonomic matching
+matched_df, unmatched_df, possible_typos_df = txm.match_dataset(gbif_apidae, ncbi_apidae, model, tree_generation = True)
+```
+
+### 3️⃣ Generate a Phylogenetic Tree
+```bash
+tree = txm.generate_taxonomic_tree(matched_df, unmatched_df)
+txm.print_tree(tree, root_name="Apidae")
+txm.save_tree(tree, "taxon_tree.txt")
+```
+
+### 4️⃣ Identify Closest Living Relatives for Fossil Species
+```bash
+# Retrieve the dataset ID associated with a fossil species
+dataset_id = txm.get_dataset_from_species("Ristoria pliocaenica")
+
+# Download taxonomic datasets
+paleodb_dataset = txm.download_gbif_taxonomy(source=dataset_id)
+ncbi_dataset = txm.download_ncbi_taxonomy(source="ncbi")
+
+# Find the closest matching clades for the species
+col_parents, ncbi_parents = txm.select_closest_common_clade(
+    "Ristoria pliocaenica",
+    paleodb_dataset,
+    ncbi_dataset
+)
+```
+
+### 5️⃣ Add Conservation Status Using IUCN Data
+```bash
+df_with_iucn_status = txm.add_iucn_status_column(matched_df)
+df_with_iucn_status[df_with_iucn_status.iucnRedListCategory.isin(['ENDANGERED', 'CRITICALLY_ENDANGERED', 'VULNERABLE'])]
+```
+
+## 📈 Visualization
+### Distribution of Conservation Status
+```bash
+txm.plot_conservation_statuses(df_with_iucn_status)
+```
+
+## 🤝 Contributing & Maintenance
+
+If you want to contribute to **TaxonMatch**:
+
+- **Open an issue** to report bugs or suggest improvements.
+- **Create a pull request** with a clear description of your changes.
+- **Follow the coding guidelines** and ensure all modifications are tested.
+
+For questions or support, contact michele.leone@unil.ch.
+
+
+## License
+
+This project is licensed under the MIT License.
+
+
+
+
