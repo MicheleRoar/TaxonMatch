@@ -9,11 +9,8 @@ setup(
     long_description=open('README.md').read(),
     long_description_content_type='text/markdown',
     url='https://github.com/MicheleRoar/TaxonMatch',
-    packages=find_packages(),
+    packages=find_packages(include=['taxonmatch', 'taxonmatch.*']),
     include_package_data=True,
-    package_data={
-        'taxonmatch': ['files/dictionaries/*.pkl', 'files/models/*.pkl'],
-    },
     install_requires=[
         "anytree>=2.12.1",
         "ete3>=3.1.3",
