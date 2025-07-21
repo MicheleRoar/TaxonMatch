@@ -963,7 +963,7 @@ def restore_original_NCBI_labels(final_dataset, target_dataset):
 
     # Reorder dataframe
     final_dataset_fixed = final_dataset_fixed[cols]
-    return final_dataset
+    return final_dataset_fixed
 
     
 
