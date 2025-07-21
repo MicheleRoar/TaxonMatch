@@ -43,7 +43,7 @@ CLASSIFIERS = {
     "MLPClassifier": MLPClassifier(max_iter=500, random_state=0),
     "RandomForestClassifier": RandomForestClassifier(random_state=0),
     "GradientBoostingClassifier": GradientBoostingClassifier(random_state=0),
-    "XGBClassifier": XGBClassifier(use_label_encoder=False, eval_metric='logloss', random_state=0),
+    "XGBClassifier": XGBClassifier(eval_metric='logloss', random_state=0),
 }
 
 def generate_positive_set(gbif_dataset, ncbi_dataset, n):

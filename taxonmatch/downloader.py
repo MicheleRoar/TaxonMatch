@@ -491,7 +491,7 @@ def download_ncbi_taxonomy(output_folder=None, source=None):
 
         # If the dictionary file doesn't exist, generate and save it
         if not os.path.exists(dictionary_path):
-            #print("ncbi_dictionaries.pkl not found. Generating from names.dmp...")
+            print("ncbi_dictionaries.pkl not found. Generating from names.dmp...")
             ncbi_synonyms_names, ncbi_synonyms_ids = get_ncbi_synonyms(str(names_path))
             save_ncbi_dictionary(ncbi_synonyms_names, ncbi_synonyms_ids)
     

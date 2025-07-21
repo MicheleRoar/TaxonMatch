@@ -938,14 +938,18 @@ def convert_tree_to_dataframe(tree, query_dataset, target_dataset, path, inat_da
         final_dataset.loc[:, 'inat_taxon_id'] = final_dataset['inat_taxon_id'].astype('Int64')
 
 
+    # Step 14: Save to file
+    final_dataset.to_csv(path, index=False)
 
-    # Step 14: Restore original NBI Labels    
+    return final_dataset
+
+
+def restore_original_NCBI_labels(final_dataset, target_dataset):
+
     final_dataset_fixed = final_dataset.copy(deep=True)
-    
     final_dataset_fixed = final_dataset_fixed.drop(columns='ncbi_canonical_name', errors='ignore')
-
     final_dataset_fixed = final_dataset_fixed.merge(
-        target_dataset[['ncbi_id', 'ncbi_canonicalName']].rename(columns={'ncbi_canonicalName': 'ncbi_canonical_name'}),
+        target_dataset[1][['ncbi_id', 'ncbi_canonicalName']].rename(columns={'ncbi_canonicalName': 'ncbi_canonical_name'}),
         how='left',
         left_on='ncbi_taxon_id',
         right_on='ncbi_id'
@@ -959,13 +963,9 @@ def convert_tree_to_dataframe(tree, query_dataset, target_dataset, path, inat_da
 
     # Reorder dataframe
     final_dataset_fixed = final_dataset_fixed[cols]
+    return final_dataset
 
-
-    # Step 14: Save to file
-    final_dataset_fixed.to_csv(path, index=False)
-
-    return final_dataset_fixed
-
+    
 
 def find_synonyms(input_term, ncbi_data, gbif_data):
     # Reset accepted_value and synonyms
