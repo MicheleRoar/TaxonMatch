@@ -957,7 +957,7 @@ def restore_original_NCBI_labels(final_dataset, target_dataset):
 
     cols = final_dataset_fixed.columns.tolist()
     cols.remove('ncbi_canonical_name')
-    insert_pos = cols.index('gbif_canonical_name')
+    insert_pos = cols.index('gbif_taxon_id') +1
     cols.insert(insert_pos, 'ncbi_canonical_name')
     final_dataset_fixed = final_dataset_fixed[cols]
 
