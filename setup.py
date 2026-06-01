@@ -13,6 +13,7 @@ setup(
     include_package_data=True,
     install_requires=[
         "anytree>=2.12.1",
+        "beautifulsoup4>=4.12.0",
         "ete3>=3.1.3",
         "Levenshtein>=0.24.0",
         "rapidfuzz>=3.6.1",
