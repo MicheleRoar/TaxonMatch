@@ -211,6 +211,14 @@ fuzzy_ratios = {
 # Precompute rank distance similarity mapping
 rank_distance_map = np.array([1.0, 0.8, 0.6, 0.4, 0.2, 0.0])
 
+# Canonical order of similarity-feature columns as produced by compute_similarity_metrics().
+# This MUST match the column order the classifier was trained on (see generate_training_test
+# below): the saved model carries no feature names, so XGBoost (and the other sklearn
+# classifiers) score the feature matrix positionally. Any code that builds the feature
+# matrix for prediction (e.g. match_dataset in matching.py) must select columns in this
+# exact order.
+SIMILARITY_FEATURE_ORDER = ['rank_similarity'] + list(distances.keys()) + list(fuzzy_ratios.keys())
+
 def compute_rank_similarity(gbif_rank, ncbi_rank):
     gbif_level = rank_hierarchy.get(gbif_rank, 10)  # Evita `.lower()`
     ncbi_level = rank_hierarchy.get(ncbi_rank, 10)
@@ -306,6 +314,15 @@ def generate_training_test(df_output, test_size=0.3, random_state=0):
 
     # Extract feature columns, excluding non-feature columns
     feature_columns = [col for col in df_output.columns if col not in ["query_name", "target_name", "taxonRank", "ncbi_rank", "match"]]
+
+    # Guardrail: catch any future change to compute_similarity_metrics() (e.g. reordering
+    # or renaming the distances/fuzzy_ratios dicts) that would silently desynchronize
+    # training-time column order from SIMILARITY_FEATURE_ORDER, which match_dataset() relies on.
+    assert feature_columns == SIMILARITY_FEATURE_ORDER, (
+        "Training feature column order no longer matches SIMILARITY_FEATURE_ORDER "
+        "(model_training.py). Update SIMILARITY_FEATURE_ORDER to match before retraining, "
+        "and re-check that matching.match_dataset uses the same order."
+    )
 
     # Extract feature matrix
     X = df_output[feature_columns].values

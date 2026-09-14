@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.neighbors import NearestNeighbors
-from .model_training import compute_similarity_metrics
+from .model_training import compute_similarity_metrics, SIMILARITY_FEATURE_ORDER
 from .loader import load_gbif_dictionary, load_ncbi_dictionary
 from .tree_utils import manage_duplicated_branches, fix_inconsistent_subspecies
 from sklearn.metrics.pairwise import cosine_similarity
@@ -311,11 +311,13 @@ def match_dataset(query_dataset, target_dataset, model, tree_generation=False):
         matched_df, unmatched_df, possible_typos_df
     """
 
-    relevant_features = [
-        'rank_similarity', 'levenshtein_distance', 'damerau_levenshtein_distance', 'ratio',
-        'q_ratio', 'token_sort_ratio', 'w_ratio', 'token_set_ratio', 'jaro_winkler_similarity',
-        'partial_ratio', 'hamming_distance', 'jaro_similarity'
-    ]
+    # BUGFIX: this list previously hardcoded its own column order, which had drifted out of
+    # sync with the order compute_similarity_metrics() actually produces during training
+    # (see generate_training_test in model_training.py). Because the saved model has no
+    # feature names, XGBoost scored these columns positionally against the wrong features,
+    # silently dropping accuracy from ~0.97 (Table 1) to ~0.82. Using the single canonical
+    # SIMILARITY_FEATURE_ORDER here keeps inference and training permanently in sync.
+    relevant_features = list(SIMILARITY_FEATURE_ORDER)
 
     gbif_synonyms_names, _, _ = load_gbif_dictionary()
     ncbi_synonyms_names, _ = load_ncbi_dictionary()
